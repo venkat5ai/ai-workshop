@@ -95,7 +95,7 @@ def extract_text_with_pymupdf(pdf_path):
 
 
 # Assuming your PDF documents are in a directory named 'insurance_pdfs'
-pdf_directory = '/content/insurance_pdfs'
+pdf_directory = '../data/insurance_pdfs'
 insurance_documents = []
 
 if not os.path.exists(pdf_directory):
@@ -237,7 +237,7 @@ else:
 
 
             # Define Training Arguments (adjust these parameters for your training run)
-            output_dir = "./results" # Directory to save checkpoints and outputs
+            output_dir = "../data/results" # Directory to save checkpoints and outputs
             training_args = TrainingArguments(
                 output_dir=output_dir,
                 # Evaluation strategy is set to 'no' as we don't have a separate eval dataset
@@ -273,7 +273,7 @@ else:
 
             # --- Saving the Custom Trained Model Locally ---
             # THIS IS WHERE YOUR CUSTOM TRAINED MODEL IS SAVED
-            save_directory = "./my_insurance_model"
+            save_directory = "../data/models"
             print(f"\nSaving custom trained model and tokenizer to {save_directory}...")
             model.save_pretrained(save_directory)
             tokenizer.save_pretrained(save_directory)
