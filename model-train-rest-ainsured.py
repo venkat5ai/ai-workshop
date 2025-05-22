@@ -1,7 +1,5 @@
 # Ensure necessary libraries are installed at the beginning
-# !pip install PyPDF2 transformers accelerate datasets torch langchain scikit-learn
-# !pip install PyMuPDF
-# !pip install pypdf
+# !pip install pypdf PyMuPDF PyPDF2 transformers accelerate datasets torch langchain scikit-learn
 
 import os
 import pypdf # Keep the import for clarity and safety
