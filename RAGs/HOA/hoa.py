@@ -14,6 +14,8 @@ from langchain.chains.question_answering import load_qa_chain
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import LLMChain
 
+from flask import Flask, request, jsonify, render_template # Add render_template
+
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify
 import uuid
@@ -114,6 +116,11 @@ def initialize_rag_components():
 
 # --- Flask App Setup ---
 app = Flask(__name__) # Initialize Flask app
+
+# --- NEW: Route to serve the HTML UI ---
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 # --- API Endpoint for Chat ---
 @app.route('/chat', methods=['POST'])
