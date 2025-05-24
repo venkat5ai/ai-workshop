@@ -15,8 +15,8 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import LLMChain
 
 # --- Flask and related imports ---
-from flask import Flask, request, jsonify, render_template # render_template for serving HTML
-from flask_cors import CORS # NEW: For Cross-Origin Resource Sharing
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS # For Cross-Origin Resource Sharing
 
 import uuid
 import os
@@ -116,16 +116,16 @@ def initialize_rag_components():
 
 # --- Flask App Setup ---
 app = Flask(__name__) # Initialize Flask app
-CORS(app) # NEW: Enable CORS for all routes
+CORS(app) # Enable CORS for all routes
 
-# --- Route to serve the HTML UI ---
-@app.route('/')
+# --- Route for the Web UI (e.g., for local testing and debugging) ---
+@app.route('/') # Or '/test' if you prefer a separate path for the UI
 def index():
     return render_template('index.html')
 
-# --- API Endpoint for Chat ---
-@app.route('/chat', methods=['POST'])
-def chat():
+# --- API Endpoint for Chat (for external systems / programmatic access) ---
+@app.route('/api/bot', methods=['POST']) # NEW: Renamed endpoint from /api/chat to /api/bot
+def api_bot(): # Renamed function to match route
     # Ensure request is JSON
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
@@ -174,7 +174,6 @@ Chat History:
 Follow Up Input: {question}
 Standalone question:"""
         question_generator_prompt = ChatPromptTemplate.from_template(question_generator_template)
-        # FIX: Changed to LLMChain from pipe syntax
         question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt)
 
         # Define the Combine Documents Chain

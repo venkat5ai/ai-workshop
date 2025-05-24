@@ -16,7 +16,9 @@
     * [5. Initialize the ChromaDB Vector Store](#5-initialize-the-chromadb-vector-store)
 6.  [Running the Application](#6-running-the-application)
     * [Running the Flask Server](#running-the-flask-server)
+    * [Accessing the Web UI](#accessing-the-web-ui)
     * [Testing the API (using curl)](#testing-the-api-using-curl)
+    * [Health Check](#health-check)
 7.  [Technical Details](#7-technical-details)
     * [Retrieval-Augmented Generation (RAG)](#retrieval-augmented-generation-rag)
     * [Embedding Model](#embedding-model)
@@ -24,6 +26,8 @@
     * [Large Language Model (LLM)](#large-language-model-llm)
     * [Conversational Memory](#conversational-memory)
     * [Hybrid RAG & Persona Prompting](#hybrid-rag--persona-prompting)
+    * [CORS (Cross-Origin Resource Sharing)](#cors-cross-origin-resource-sharing)
+    * [Eager Loading](#eager-loading)
 8.  [Project Structure](#8-project-structure)
 9.  [Troubleshooting](#9-troubleshooting)
 10. [Future Enhancements](#10-future-enhancements)
@@ -42,7 +46,9 @@ This project implements the core RAG logic as a Flask web service, listening for
 * **Document-Grounded Answers:** Provides responses directly from your uploaded HOA PDF documents.
 * **Hybrid RAG:** Seamlessly falls back to the Large Language Model's (LLM) general knowledge if information is not found in the provided documents, without explicit user notification.
 * **Conversational Memory:** Remembers the context of previous questions within a single user session for more natural interactions.
-* **Web API:** Exposes a simple HTTP API endpoint (`/chat`) for integration with a web frontend or other applications.
+* **Web API (`/api/bot`):** Exposes a dedicated HTTP API endpoint for integration with a web frontend or other backend applications.
+* **Simple Web UI (`/`):** Provides a basic browser-based chat interface for easy local testing and interaction.
+* **Eager Loading:** RAG components (ChromaDB, LLM, Embedding Model) are initialized at application startup, eliminating "cold start" delays for the first request.
 * **Extensible:** Easily add more PDF documents to expand its knowledge base.
 * **Open-Source Technologies:** Built using popular Python libraries like LangChain, Flask, and ChromaDB.
 
@@ -50,37 +56,41 @@ This project implements the core RAG logic as a Flask web service, listening for
 
 ### Phase 1 (Current Implementation)
 
-The current architecture is a simple two-tier setup (though Flask acts as a lightweight application server).
+The current architecture provides a clear separation between the UI and the API layer.
 
-* **Client (e.g., `curl`, browser with JavaScript):** Initiates HTTP POST requests to the Flask application. It sends the `question` and a `session_id` (a unique identifier for the conversation).
+* **Client (Web Browser):** Loads the `index.html` UI from the Flask app's root (`/`). Its JavaScript code then makes HTTP POST requests to the `/api/bot` endpoint.
+* **Client (External System/`curl`):** Initiates HTTP POST requests directly to the `/api/bot` endpoint.
 * **Python Application (Flask `hoa.py`):**
     * Runs as a web server, listening on port `3010`.
-    * Initializes and manages the RAG components (Embedding Model, Vector Database, LLM) once per application startup.
-    * Maintains an in-memory dictionary (`qa_chain_configs`) to store individual `ConversationalRetrievalChain` instances (each with its own `ConversationBufferMemory`) for each active `session_id`.
+    * **Serves the Web UI:** The root endpoint (`/`) serves the `templates/index.html` file.
+    * **API Endpoint:** The `/api/bot` endpoint handles all JSON-based question-answering requests.
+    * **Eager Initialization:** Initializes and manages the RAG components (Embedding Model, Vector Database, LLM) once per application startup, before listening for requests.
+    * **Session Management:** Maintains an in-memory dictionary (`qa_chain_configs`) to store individual `ConversationalRetrievalChain` instances (each with its own `ConversationBufferMemory`) for each active `session_id`.
     * When a request comes in, it retrieves or creates the appropriate session's memory and RAG chain.
     * Processes the question using the RAG pipeline.
     * Returns the answer as a JSON HTTP response, along with the `session_id`.
 * **ChromaDB Vector Store (`./chroma_db`):** Stores the vectorized (embedded) chunks of your HOA documents locally on the filesystem. This acts as the knowledge base for the RAG system.
 
-+----------------+       HTTP POST (question, session_id)       +-------------------+
-|   Client       | <------------------------------------------> |  Python App (Flask) |
-| (curl, Browser) |                                              | - hoa.py            |
-+----------------+       HTTP JSON Response (answer, session_id) | - Listens on 3010   |
-| - Manages in-memory |
-|   session_id -> RAG Chain (with Memory) |
-+-------------------+
-|
-v
-+-------------------+
-|   ChromaDB        |
-|  (chroma_db folder)|
-+-------------------+
++----------------+       HTTP GET (HTML/JS)          +-------------------+
+|                | &lt;-------------------------------> |  Python App (Flask) |
+|   Web Browser  |                                   | - hoa.py            |
+| (Web UI on /)  |                                   | - Listens on 3010   |
++----------------+                                   | - Serves UI on /    |
+^                                            | - Handles API on /api/bot |
+| HTTP POST (question, session_id)           | - Manages in-memory |
+| (from JS)                                  |   session_id -> RAG Chain (with Memory) |
+v                                            +-------------------+
++----------------+                                            |
+| External System|                                            v
+|    (e.g., curl) | -------------------------------------->  +-------------------+
++----------------+   HTTP POST (question, session_id)        |   ChromaDB        |
+&lt;---------------------------------------   |  (chroma_db folder)|
+HTTP JSON Response (answer, session_id)   +-------------------+
 
 ### Future Phases (Conceptual)
 
 As discussed, future enhancements could involve:
 
-* **Web Tier:** A dedicated web frontend (HTML/CSS/JavaScript) hosted by a web server (e.g., Nginx) that interacts with this Flask API.
 * **Production WSGI Server:** Using Gunicorn or Uvicorn to run the Flask app for better concurrency and stability in production.
 * **Containerization (Docker):** Packaging the Flask app into a Docker container for portable and consistent deployment.
 * **Orchestration (Kubernetes):** Managing Docker containers in a Kubernetes cluster for scalability, high availability, and automated deployments.
@@ -105,8 +115,24 @@ If this project is part of a larger Git repository, ensure you have it cloned. A
 ```bash
 git clone <your-repository-url>
 cd ai-workshop/RAGs/HOA
+2. Configure Google Gemini API Key
+Set your Google Gemini API key as an environment variable. Replace YOUR_API_KEY_HERE with your actual key.
+
+For Linux/macOS:
+Bash
 
 export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+For Windows (Command Prompt):
+Bash
+
+set GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+For Windows (PowerShell):
+PowerShell
+
+$env:GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+IMPORTANT: This setting is usually temporary for the current terminal session. For persistent setting, refer to your OS documentation.
+3. Place Your HOA Documents
+Create a directory named data within your HOA project folder if it doesn't exist. Place all your HOA PDF documents inside this data folder.
 
 ai-workshop/
 └── RAGs/
@@ -115,39 +141,162 @@ ai-workshop/
         │   ├── bylaws.pdf
         │   ├── Declaration-incl-Supplements.pdf
         │   └── pool-rules.pdf
+        ├── templates/             <-- Contains index.html for Web UI
+        │   └── index.html
         ├── hoa.py
         └── requirements.txt
+4. Install Dependencies
+It's recommended to use a Python virtual environment.
 
-rm -rf chroma_db
+Bash
+
+python -m venv venv
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows:
+.\venv\Scripts\activate
+
 pip install -r requirements.txt
+requirements.txt content:
+
+Flask
+Flask-Cors
+langchain
+chromadb
+pypdf
+sentence-transformers
+transformers
+accelerate
+bitsandbytes
+langchain_google_genai
+langchain-community
+langchain-huggingface
+langchain-chroma
+5. Initialize the ChromaDB Vector Store
+The first time you run hoa.py, it will automatically create the chroma_db directory and build the vector store from your PDFs. If you update your documents or want to rebuild the vector store, you can delete the chroma_db folder before running the application again.
+
+Bash
+
+rm -rf chroma_db # (Use 'rmdir /s /q chroma_db' on Windows)
+6. Running the Application
+Running the Flask Server
+Navigate to your HOA directory in the terminal and run:
+
+Bash
 
 python hoa.py
+You should see output similar to this, indicating that the Flask app is starting and listening on port 3010:
 
-You should see output indicating that the Flask app is starting and listening on port 3010:
 Starting HOA Assistant Flask app on [http://127.0.0.1:3010](http://127.0.0.1:3010)
 Waiting for incoming requests...
-* Serving Flask app 'hoa'
-* Debug mode: off
+Loading documents from: ./data
+Loaded XXX document(s).
+Split documents into YYY chunks.
+Creating embeddings and storing in ChromaDB...
+Creating new ChromaDB vector store... OR Loading existing ChromaDB vector store...
+Using Gemini model: models/gemini-2.5-flash-preview-05-20
+RAG components initialized.
+RAG components ready for requests!
+--- Checking available Gemini models ---
+--- End of available models ---
+ * Debugger is active!
+ * Debugger PIN: XXX-XXX-XXX
 WARNING: This is a development server. Do not use it in a production deployment.
 Use a production WSGI server instead.
-* Running on [http://0.0.0.0:3010](http://0.0.0.0:3010)
-Press CTRL+C to quit
+ * Running on [http://0.0.0.0:3010](http://0.0.0.0:3010) (Press CTRL+C to quit)
+Accessing the Web UI
+Once the server is running, open your web browser and navigate to:
 
-Health Check:
-Reqest: curl [http://127.0.0.1:3010/health](http://127.0.0.1:3010/health)
-Response: {"message": "HOA Assistant is running", "status": "healthy"}
+[http://127.0.0.1:3010/](http://127.0.0.1:3010/)
+You will see the chat interface. You can type your questions and interact with the HOA Assistant. The UI will automatically manage the session ID.
 
-First Request:
-Request: curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"What is the annual HOA due amount?\"}" [http://127.0.0.1:3010/chat](http://127.0.0.1:3010/chat)
-Response: {"answer": "The annual HOA due amount is $X,000, payable on [date]...", "session_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"}
+Testing the API (using curl)
+You can directly interact with the API endpoint using curl commands.
 
-IMPORTANT: Copy the session_id value from this response. You'll need it for subsequent requests in the same conversation.
+First Request (to start a new session):
+A session_id will be generated if not provided. Copy this session_id from the response.
 
-Second Request (in same session):
-Reaues: curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"Tell me about the annual meeting.\"}" [http://127.0.0.1:3010/chat](http://127.0.0.1:3010/chat)
+Bash
 
-```
+curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"What is the annual HOA due amount?\"}" [http://127.0.0.1:3010/api/bot](http://127.0.0.1:3010/api/bot)
+Example Response:
 
+JSON
 
+{"answer": "The annual HOA due amount is $X,000, payable on [date]...", "session_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"}
+Subsequent Requests (in the same session):
+Use the session_id obtained from the first request to continue the conversation.
 
+Bash
 
+curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"When is the annual meeting?\", \"session_id\": \"a1b2c3d4-e5f6-7890-1234-567890abcdef\"}" [http://127.0.0.1:3010/api/bot](http://127.0.0.1:3010/api/bot)
+Health Check
+You can check if the Flask application is running and responsive by hitting the /health endpoint:
+
+Bash
+
+curl [http://127.0.0.1:3010/health](http://127.0.0.1:3010/health)
+Expected Response:
+
+JSON
+
+{"message": "HOA Assistant is running", "status": "healthy"}
+7. Technical Details
+Retrieval-Augmented Generation (RAG)
+The core of the system is RAG, which combines the power of a large language model with a retrieval mechanism. When a question is asked, the system first retrieves relevant chunks of information from the HOA documents (based on semantic similarity) and then uses the LLM to generate an answer grounded in that retrieved context.
+
+Embedding Model
+The all-MiniLM-L6-v2 Sentence Transformer model is used to convert text (document chunks and user questions) into numerical vector embeddings. These embeddings allow for efficient semantic search within the vector database.
+
+Vector Database (ChromaDB)
+ChromaDB is used as a lightweight, local vector store. It persists the document embeddings on the filesystem in the ./chroma_db directory, allowing for fast retrieval of relevant document chunks during the RAG process without re-embedding documents on every application start (unless the chroma_db folder is deleted).
+
+Large Language Model (LLM)
+The system utilizes the models/gemini-2.5-flash-preview-05-20 model from Google Gemini through the langchain_google_genai integration. This powerful LLM is responsible for understanding the question, synthesizing information from retrieved documents, and generating coherent, conversational answers.
+
+Conversational Memory
+ConversationBufferMemory from LangChain is used to store the history of the current conversation within each user session. This allows the LLM to consider previous turns in the dialogue when generating responses, leading to more natural and contextually aware interactions. Each session_id (managed by the client, e.g., the web UI's JavaScript or explicitly by curl) is tied to its own memory instance.
+
+Hybrid RAG & Persona Prompting
+The system is designed to provide answers primarily from the HOA documents. However, if the retrieved context is insufficient, the LLM's general knowledge will be leveraged, providing a seamless fallback without explicitly informing the user that the answer came from outside the documents. The LLM is also prompted to act as a "diligent and accurate HOA assistant."
+
+CORS (Cross-Origin Resource Sharing)
+The Flask-CORS extension is used to handle Cross-Origin Resource Sharing headers. This is essential to allow the JavaScript running in your web browser (which typically considers localhost and 127.0.0.1 as different origins) to make POST requests to your Flask API endpoint.
+
+Eager Loading
+The RAG components (ChromaDB vector store loading/building, LLM initialization, embedding model setup) are performed once at the Flask application's startup. This "eager loading" strategy ensures that the application is fully ready to serve requests as soon as it begins listening on the specified port, eliminating "cold start" delays for the first API call.
+
+8. Project Structure
+ai-workshop/
+└── RAGs/
+    └── HOA/
+        ├── data/
+        │   ├── <your-hoa-document-1.pdf>
+        │   └── <your-hoa-document-N.pdf>
+        ├── chroma_db/                 <-- Auto-generated by application (stores vector embeddings)
+        │   └── <chroma_db_files>
+        ├── templates/
+        │   └── index.html             <-- HTML for the web UI
+        ├── .env                       <-- (Optional) For environment variables
+        ├── hoa.py                     <-- Main Flask application
+        └── requirements.txt           <-- Python dependencies
+9. Troubleshooting
+"Error: Could not connect to the assistant." (in browser UI):
+Ensure your hoa.py server is running.
+Verify Flask-CORS is installed (pip install Flask-CORS) and CORS(app) is enabled in hoa.py.
+Check your browser's developer console (F12, then "Console" or "Network" tab) for CORS errors.
+Ensure the JavaScript Workspace URL in index.html (currently http://127.0.0.1:3010/api/bot) correctly matches your Flask app's address and port.
+"Error listing models" or LLM-related errors (in Flask console):
+Double-check that your GOOGLE_API_KEY environment variable is correctly set in the terminal before you run python hoa.py.
+Generate a new API key from Google AI Studio and try again.
+Ensure your machine has internet access to reach Google's API.
+"Loaded 0 document(s)." or RAG-related errors:
+Verify that your PDF documents are placed in the ./data directory relative to where hoa.py is run.
+Check file permissions for the data directory and the PDF files.
+Slow first response: If this happens after you've implemented eager loading, ensure rm -rf chroma_db was run before testing to force a rebuild, or check if the ChromaDB loading phase is indeed slow.
+10. Future Enhancements
+Streamlined Document Updates: Implement an API endpoint to upload new documents and dynamically update the vector store without restarting the application.
+User Authentication/Authorization: Add a login system to restrict access to the chat assistant.
+Error Handling and Logging: More robust logging and error handling for production environments.
+Advanced RAG Techniques: Explore more sophisticated retrieval methods (e.g., HyDE, Cohere Rerank) or multi-modal RAG.
+Deployment Automation: Scripts or configurations for automated deployment to cloud platforms (AWS, GCP, Azure).
