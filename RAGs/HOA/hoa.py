@@ -3,19 +3,20 @@
 # pip install langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai
 # pip install -U langchain-community
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.document_loaders import PyPDFDirectoryLoader
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains import RetrievalQA
+from langchain.chains import ConversationalRetrievalChain # For memory-aware RAG
+from langchain.memory import ConversationBufferMemory # For storing conversation history
 from langchain_core.prompts import ChatPromptTemplate # For custom prompt template
-from langchain.chains.question_answering import load_qa_chain
+# Removed: from langchain.chains.Youtubeing import load_qa_chain (not strictly needed this way)
 
 import os
 import google.generativeai as genai
 
-# --- Configuration ---  
+# --- Configuration ---
 # export GOOGLE_API_KEY as an environment variable, LangChain will automatically pick it up.
 # os.environ["GOOGLE_API_KEY"] = "YOUR_API_KEY" # uncomment below line if you want to set it here
 
@@ -92,35 +93,48 @@ print(f"Using Gemini model: {MODEL_TO_USE}")
 # --- 5. Create the Retriever ---
 retriever = db.as_retriever(search_kwargs={"k": 3}) # k=3 means it will retrieve the top 3 most relevant chunks
 
-# --- 6. Set up the Retrieval-Augmented Generation (RAG) Chain with Hybrid Behavior ---
-# Define a custom prompt template for seamless hybrid behavior
+# --- 6. Set up the Retrieval-Augmented Generation (RAG) Chain with Memory ---
+
+# Initialize memory for the conversation
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+# Define a custom prompt template for seamless hybrid behavior WITH chat history
+# This prompt will be used for the final answer generation
 custom_template = """
 You are a diligent and accurate HOA assistant. Provide information clearly and directly.
 
-If the user's question can be fully answered using the provided 'Context' documents, prioritize those documents and provide a precise answer based solely on them.
-If the 'Context' documents do not contain relevant information or sufficient detail to answer the question, then use your general knowledge to answer the question.
-In all cases, provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
-If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
-
+Chat History:
+{chat_history}
 Context:
 {context}
+Question:
+{question}
 
-Question: {question}
+Based on the chat history and the provided context documents (if relevant), or your general knowledge (if context is not relevant), answer the user's question. Provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
+If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
 """
-custom_prompt = ChatPromptTemplate.from_template(custom_template)
+# Create the prompt from the template
+combine_docs_prompt = ChatPromptTemplate.from_template(custom_template)
 
-# Build the internal QA chain with the custom prompt
-# This replaces the simple chain_type="stuff" usage in RetrievalQA.from_chain_type
-combine_docs_chain = load_qa_chain(llm, chain_type="stuff", prompt=custom_prompt)
 
-# Create the RetrievalQA chain using the custom combine_docs_chain
-qa_chain = RetrievalQA(
-    combine_documents_chain=combine_docs_chain,
+# Initialize the ConversationalRetrievalChain
+# We explicitly set the `combine_docs_chain_kwargs` to pass our custom prompt
+# This avoids the "multiple values for keyword argument 'combine_docs_chain'" error
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm=llm,
     retriever=retriever,
-    return_source_documents=True # Still useful for debugging or optional display
+    memory=memory, # Pass the memory object here
+    # This automatically uses the LLM to rephrase the current question
+    # given the chat history, making it suitable for retrieval.
+    # No changes needed for `condense_question_llm` unless you want a different LLM
+    # for that specific task.
+    # We pass the custom prompt for the `combine_docs_chain` via its kwargs
+    combine_docs_chain_kwargs={"prompt": combine_docs_prompt},
+    # `return_source_documents` is False by default, matching your preference.
 )
 
 print("\nSetup complete! You can now start asking questions.")
+print("The assistant will remember the conversation within this session.")
 
 # --- 7. Interactive Q&A Loop ---
 while True:
@@ -131,27 +145,15 @@ while True:
 
     print("\nThinking...")
     try:
-        result = qa_chain({"query": question})
-        answer = result['result']
-        source_documents = result['source_documents']
+        # Pass the question to the ConversationalRetrievalChain
+        # It handles chat history automatically via the `memory` object
+        result = qa_chain({"question": question}) # Note: key is "question", not "query" for this chain
 
+        answer = result['answer'] # ConversationalRetrievalChain returns 'answer' not 'result'
+        
         print("\n--- Answer ---")
         print(answer)
-
-        # You can still conditionally show sources if you want, or just always say
-        # "Answer provided." based on whether source_documents exist.
-        print("\n--- Sources (Indicates if documents were highly relevant) ---")
-        if source_documents:
-            print("  Relevant documents found:")
-            for i, doc in enumerate(source_documents):
-                print(f"  Source {i+1}: {doc.metadata.get('source', 'Unknown')}, Page: {doc.metadata.get('page', 'Unknown')}")
-        else:
-            print("  No highly relevant documents were directly cited for this answer.")
-            # Note: This doesn't mean it *didn't* try to look; it means the retriever
-            # didn't return documents that the LLM deemed directly useful for the final answer.
 
     except Exception as e:
         print(f"An error occurred: {e}")
         print("Please ensure your Google Gemini API key is correct and you have an active internet connection.")
-
-        
