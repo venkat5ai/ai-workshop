@@ -1,6 +1,6 @@
 # First, ensure you have the necessary libraries installed.
 # You can install them by running the following in your terminal:
-# pip install Flask langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai langchain-community langchain-huggingface langchain-chroma
+# pip install Flask langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai langchain-community langchain-huggingface langchain-chroma Flask-CORS
 
 # --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -14,10 +14,10 @@ from langchain.chains.question_answering import load_qa_chain
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import LLMChain
 
-from flask import Flask, request, jsonify, render_template # Add render_template
-
 # --- Flask and related imports ---
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template # render_template for serving HTML
+from flask_cors import CORS # NEW: For Cross-Origin Resource Sharing
+
 import uuid
 import os
 import google.generativeai as genai
@@ -116,8 +116,9 @@ def initialize_rag_components():
 
 # --- Flask App Setup ---
 app = Flask(__name__) # Initialize Flask app
+CORS(app) # NEW: Enable CORS for all routes
 
-# --- NEW: Route to serve the HTML UI ---
+# --- Route to serve the HTML UI ---
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -142,10 +143,6 @@ def chat():
         print(f"New session created: {session_id}")
     else:
         print(f"Processing for session: {session_id}")
-
-    # --- REMOVED LAZY LOADING CHECK ---
-    # llm and retriever are now guaranteed to be initialized when the app starts
-    # No if llm is None or retriever is None: initialize_rag_components() needed here.
 
     # Get or create the qa_chain for this session
     if session_id not in qa_chain_configs:
@@ -177,6 +174,7 @@ Chat History:
 Follow Up Input: {question}
 Standalone question:"""
         question_generator_prompt = ChatPromptTemplate.from_template(question_generator_template)
+        # FIX: Changed to LLMChain from pipe syntax
         question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt)
 
         # Define the Combine Documents Chain
@@ -222,4 +220,4 @@ if __name__ == '__main__':
     check_gemini_models() # This can be called here, as it doesn't depend on LLM/Retriever
 
     # Run the Flask app
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=True)
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=True) # debug=True is good for dev, but disable in prod
