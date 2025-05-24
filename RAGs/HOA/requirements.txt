@@ -1,0 +1,11 @@
+langchain
+chromadb
+pypdf
+sentence-transformers
+transformers
+accelerate
+bitsandbytes
+langchain_google_genai
+langchain_community
+protobuf==3.20.3
+google-generativeai
