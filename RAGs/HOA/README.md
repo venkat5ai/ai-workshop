@@ -61,3 +61,93 @@ The current architecture is a simple two-tier setup (though Flask acts as a ligh
     * Processes the question using the RAG pipeline.
     * Returns the answer as a JSON HTTP response, along with the `session_id`.
 * **ChromaDB Vector Store (`./chroma_db`):** Stores the vectorized (embedded) chunks of your HOA documents locally on the filesystem. This acts as the knowledge base for the RAG system.
+
++----------------+       HTTP POST (question, session_id)       +-------------------+
+|   Client       | <------------------------------------------> |  Python App (Flask) |
+| (curl, Browser) |                                              | - hoa.py            |
++----------------+       HTTP JSON Response (answer, session_id) | - Listens on 3010   |
+| - Manages in-memory |
+|   session_id -> RAG Chain (with Memory) |
++-------------------+
+|
+v
++-------------------+
+|   ChromaDB        |
+|  (chroma_db folder)|
++-------------------+
+
+### Future Phases (Conceptual)
+
+As discussed, future enhancements could involve:
+
+* **Web Tier:** A dedicated web frontend (HTML/CSS/JavaScript) hosted by a web server (e.g., Nginx) that interacts with this Flask API.
+* **Production WSGI Server:** Using Gunicorn or Uvicorn to run the Flask app for better concurrency and stability in production.
+* **Containerization (Docker):** Packaging the Flask app into a Docker container for portable and consistent deployment.
+* **Orchestration (Kubernetes):** Managing Docker containers in a Kubernetes cluster for scalability, high availability, and automated deployments.
+* **Externalized Session Memory:** Migrating `ConversationBufferMemory` to a shared, external store like Redis to support horizontal scaling of the Flask application (where multiple instances can share session state).
+* **Externalized Vector Database:** For very large datasets or high concurrency, using a standalone, network-accessible vector database service instead of a local filesystem-based ChromaDB.
+
+## 4. Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+* **Python 3.8+**: [Download Python](https://www.python.org/downloads/)
+* **`pip` (Python package installer)**: Usually comes with Python.
+* **Google Gemini API Key**: You'll need an API key from Google AI Studio. You can get one here: [Google AI Studio](https://aistudio.google.com/app/apikey). This key should be set as an environment variable.
+* **Access to your HOA PDF documents**.
+
+## 5. Setup Instructions
+
+### 1. Clone the Repository
+
+If this project is part of a larger Git repository, ensure you have it cloned. Assuming your project root is `ai-workshop` and this specific project is under `RAGs/HOA`:
+
+```bash
+git clone <your-repository-url>
+cd ai-workshop/RAGs/HOA
+
+export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
+
+ai-workshop/
+└── RAGs/
+    └── HOA/
+        ├── data/                  <-- Place your PDFs here
+        │   ├── bylaws.pdf
+        │   ├── Declaration-incl-Supplements.pdf
+        │   └── pool-rules.pdf
+        ├── hoa.py
+        └── requirements.txt
+
+rm -rf chroma_db
+pip install -r requirements.txt
+
+python hoa.py
+
+You should see output indicating that the Flask app is starting and listening on port 3010:
+Starting HOA Assistant Flask app on [http://127.0.0.1:3010](http://127.0.0.1:3010)
+Waiting for incoming requests...
+* Serving Flask app 'hoa'
+* Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment.
+Use a production WSGI server instead.
+* Running on [http://0.0.0.0:3010](http://0.0.0.0:3010)
+Press CTRL+C to quit
+
+Health Check:
+Reqest: curl [http://127.0.0.1:3010/health](http://127.0.0.1:3010/health)
+Response: {"message": "HOA Assistant is running", "status": "healthy"}
+
+First Request:
+Request: curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"What is the annual HOA due amount?\"}" [http://127.0.0.1:3010/chat](http://127.0.0.1:3010/chat)
+Response: {"answer": "The annual HOA due amount is $X,000, payable on [date]...", "session_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"}
+
+IMPORTANT: Copy the session_id value from this response. You'll need it for subsequent requests in the same conversation.
+
+Second Request (in same session):
+Reaues: curl -X POST -H "Content-Type: application/json" -d "{\"question\": \"Tell me about the annual meeting.\"}" [http://127.0.0.1:3010/chat](http://127.0.0.1:3010/chat)
+
+```
+
+
+
+
