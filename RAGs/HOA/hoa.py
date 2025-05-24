@@ -1,18 +1,22 @@
 # First, ensure you have the necessary libraries installed.
 # You can install them by running the following in your terminal:
-# pip install langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai
-# pip install -U langchain-community
+# pip install Flask langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai langchain-community langchain-huggingface langchain-chroma
 
+# --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains import ConversationalRetrievalChain # For memory-aware RAG
-from langchain.memory import ConversationBufferMemory # For storing conversation history
-from langchain_core.prompts import ChatPromptTemplate # For custom prompt template
-# Removed: from langchain.chains.Youtubeing import load_qa_chain (not strictly needed this way)
+from langchain.memory import ConversationBufferMemory
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.question_answering import load_qa_chain
+from langchain.chains import ConversationalRetrievalChain
+from langchain.chains import LLMChain
 
+# --- Flask and related imports ---
+from flask import Flask, request, jsonify
+import uuid
 import os
 import google.generativeai as genai
 
@@ -26,10 +30,17 @@ PDF_DIRECTORY = "./data"
 # Define the directory where your ChromaDB vector store will be saved
 CHROMA_DB_DIRECTORY = "./chroma_db"
 
-# Define the directory where your ChromaDB vector store will be saved
-CHROMA_DB_DIRECTORY = "./chroma_db"
 # Define a meaningful name for your ChromaDB collection
-COLLECTION_NAME = "hoa_docs_collection"
+COLLECTION_NAME = "hoa_documents_collection"
+
+# Define the port the Flask app will listen on
+FLASK_PORT = 3010
+
+# --- Global variables for the Flask App ---
+# These will be initialized once when the Flask app starts
+llm = None
+retriever = None
+qa_chain_configs = {} # Dictionary to store qa_chain instances per session_id
 
 # --- Function to check available Gemini models (Optional, but useful for initial setup) ---
 # You can comment out the call to this function once you've confirmed your MODEL_TO_USE.
@@ -47,71 +58,95 @@ def check_gemini_models():
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
-                # print(f"  Available model: {m.name}") # Uncomment to see all available models
         print("--- End of available models ---")
     except Exception as e:
         print(f"Error listing models: {e}")
         print("Please double-check your GOOGLE_API_KEY and internet connection.")
     return available_models
 
-# Call the function to check models (can be commented out after initial setup)
-# available_gemini_models = check_gemini_models() # Keep this line if you want the check
+# --- Function to initialize the RAG components ---
+def initialize_rag_components():
+    global llm, retriever # Use global to modify the global variables
 
-# --- 1. Load PDF Documents ---
-print(f"Loading documents from: {PDF_DIRECTORY}")
-try:
-    loader = PyPDFDirectoryLoader(PDF_DIRECTORY)
-    documents = loader.load()
-    print(f"Loaded {len(documents)} document(s).")
-except Exception as e:
-    print(f"Error loading documents: {e}")
-    print(f"Please ensure the directory '{PDF_DIRECTORY}' exists and contains PDF files.")
-    print("Also, check file permissions for the directory.")
-    exit()
+    # --- 1. Load PDF Documents ---
+    print(f"Loading documents from: {PDF_DIRECTORY}")
+    try:
+        loader = PyPDFDirectoryLoader(PDF_DIRECTORY)
+        documents = loader.load()
+        print(f"Loaded {len(documents)} document(s).")
+    except Exception as e:
+        print(f"Error loading documents: {e}")
+        print(f"Please ensure the directory '{PDF_DIRECTORY}' exists and contains PDF files.")
+        print("Also, check file permissions for the directory.")
+        exit()
 
-# --- 2. Split Documents into Chunks ---
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-texts = text_splitter.split_documents(documents)
-print(f"Split documents into {len(texts)} chunks.")
+    # --- 2. Split Documents into Chunks ---
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    texts = text_splitter.split_documents(documents)
+    print(f"Split documents into {len(texts)} chunks.")
 
-# --- 3. Create Embeddings and Store in ChromaDB ---
-print("Creating embeddings and storing in ChromaDB...")
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # --- 3. Create Embeddings and Store in ChromaDB ---
+    print("Creating embeddings and storing in ChromaDB...")
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-if os.path.exists(CHROMA_DB_DIRECTORY) and os.listdir(CHROMA_DB_DIRECTORY):
-    print("Loading existing ChromaDB vector store...")
-    # Load with the specified collection name
-    db = Chroma(persist_directory=CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=COLLECTION_NAME) # UPDATED
-else:
-    print("Creating new ChromaDB vector store...")
-    # Create with the specified collection name
-    db = Chroma.from_documents(
-        texts,
-        embeddings,
-        persist_directory=CHROMA_DB_DIRECTORY,
-        collection_name=COLLECTION_NAME # UPDATED
-    )    
-    print("ChromaDB vector store created and persisted.")
+    if os.path.exists(CHROMA_DB_DIRECTORY) and os.listdir(CHROMA_DB_DIRECTORY):
+        print("Loading existing ChromaDB vector store...")
+        db = Chroma(persist_directory=CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=COLLECTION_NAME)
+    else:
+        print("Creating new ChromaDB vector store...")
+        db = Chroma.from_documents(
+            texts,
+            embeddings,
+            persist_directory=CHROMA_DB_DIRECTORY,
+            collection_name=COLLECTION_NAME
+        )
+        print("ChromaDB vector store created and persisted.")
 
-# --- 4. Set up the Language Model (Gemini) ---
-# The GOOGLE_API_KEY will be automatically picked up from your environment variables.
-# Using the model you selected.
-MODEL_TO_USE = "models/gemini-2.5-flash-preview-05-20" # Ensure this is the correct, available model
+    # --- 4. Set up the Language Model (Gemini) ---
+    MODEL_TO_USE = "models/gemini-2.5-flash-preview-05-20"
+    llm = ChatGoogleGenerativeAI(model=MODEL_TO_USE)
+    print(f"Using Gemini model: {MODEL_TO_USE}")
 
-llm = ChatGoogleGenerativeAI(model=MODEL_TO_USE)
-print(f"Using Gemini model: {MODEL_TO_USE}")
+    # --- 5. Create the Retriever ---
+    retriever = db.as_retriever(search_kwargs={"k": 3})
+    
+    print("\nRAG components initialized.")
 
-# --- 5. Create the Retriever ---
-retriever = db.as_retriever(search_kwargs={"k": 3}) # k=3 means it will retrieve the top 3 most relevant chunks
+# --- Flask App Setup ---
+app = Flask(__name__) # Initialize Flask app
 
-# --- 6. Set up the Retrieval-Augmented Generation (RAG) Chain with Memory ---
+# --- API Endpoint for Chat ---
+@app.route('/chat', methods=['POST'])
+def chat():
+    # Ensure request is JSON
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
 
-# Initialize memory for the conversation
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    data = request.get_json()
+    question = data.get('question')
+    session_id = data.get('session_id') # Get session_id from client
 
-# Define a custom prompt template for seamless hybrid behavior WITH chat history
-# This prompt will be used for the final answer generation
-custom_template = """
+    if not question:
+        return jsonify({"error": "No 'question' provided in request"}), 400
+
+    # If no session_id provided by client, generate a new one
+    if not session_id:
+        session_id = str(uuid.uuid4()) # Generate a UUID for the session
+        print(f"New session created: {session_id}")
+    else:
+        print(f"Processing for session: {session_id}")
+
+    # --- REMOVED LAZY LOADING CHECK ---
+    # llm and retriever are now guaranteed to be initialized when the app starts
+    # No if llm is None or retriever is None: initialize_rag_components() needed here.
+
+    # Get or create the qa_chain for this session
+    if session_id not in qa_chain_configs:
+        print(f"Setting up new qa_chain for session {session_id}")
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+        # Define the custom prompt template for the final answer generation
+        custom_template = """
 You are a diligent and accurate HOA assistant. Provide information clearly and directly.
 
 Chat History:
@@ -124,47 +159,60 @@ Question:
 Based on the chat history and the provided context documents (if relevant), or your general knowledge (if context is not relevant), answer the user's question. Provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
 If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
 """
-# Create the prompt from the template
-combine_docs_prompt = ChatPromptTemplate.from_template(custom_template)
+        # Create the prompt from the template
+        combine_docs_prompt = ChatPromptTemplate.from_template(custom_template)
 
+        # Define the Question Generator Prompt and Chain
+        question_generator_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
 
-# Initialize the ConversationalRetrievalChain
-# We explicitly set the `combine_docs_chain_kwargs` to pass our custom prompt
-# This avoids the "multiple values for keyword argument 'combine_docs_chain'" error
-qa_chain = ConversationalRetrievalChain.from_llm(
-    llm=llm,
-    retriever=retriever,
-    memory=memory, # Pass the memory object here
-    # This automatically uses the LLM to rephrase the current question
-    # given the chat history, making it suitable for retrieval.
-    # No changes needed for `condense_question_llm` unless you want a different LLM
-    # for that specific task.
-    # We pass the custom prompt for the `combine_docs_chain` via its kwargs
-    combine_docs_chain_kwargs={"prompt": combine_docs_prompt},
-    # `return_source_documents` is False by default, matching your preference.
-)
+Chat History:
+{chat_history}
+Follow Up Input: {question}
+Standalone question:"""
+        question_generator_prompt = ChatPromptTemplate.from_template(question_generator_template)
+        question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt)
 
-print("\nSetup complete! You can now start asking questions.")
-print("The assistant will remember the conversation within this session.")
+        # Define the Combine Documents Chain
+        combine_docs_chain = load_qa_chain(llm, chain_type="stuff", prompt=combine_docs_prompt)
 
-# --- 7. Interactive Q&A Loop ---
-while True:
-    question = input("\nEnter your question (type 'exit' to quit): ")
-    if question.lower() == 'exit':
-        print("Exiting the Q&A session. Goodbye!")
-        break
+        # Initialize the ConversationalRetrievalChain explicitly
+        session_qa_chain = ConversationalRetrievalChain(
+            retriever=retriever,
+            question_generator=question_generator_chain,
+            combine_docs_chain=combine_docs_chain,
+            memory=memory,
+        )
+        qa_chain_configs[session_id] = session_qa_chain
+    else:
+        session_qa_chain = qa_chain_configs[session_id]
 
-    print("\nThinking...")
+    # Process the question
     try:
-        # Pass the question to the ConversationalRetrievalChain
-        # It handles chat history automatically via the `memory` object
-        result = qa_chain({"question": question}) # Note: key is "question", not "query" for this chain
-
-        answer = result['answer'] # ConversationalRetrievalChain returns 'answer' not 'result'
-        
-        print("\n--- Answer ---")
-        print(answer)
-
+        result = session_qa_chain({"question": question})
+        answer = result['answer']
+        return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
-        print(f"An error occurred: {e}")
-        print("Please ensure your Google Gemini API key is correct and you have an active internet connection.")
+        print(f"An error occurred during chat for session {session_id}: {e}")
+        return jsonify({"error": "An internal error occurred while processing your request.", "details": str(e)}), 500
+
+# --- Health Check Endpoint (Optional but Recommended) ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "message": "HOA Assistant is running"}), 200
+
+
+# --- Main execution block (Eager Loading) ---
+if __name__ == '__main__':
+    print(f"\nStarting HOA Assistant Flask app on http://127.0.0.1:{FLASK_PORT}")
+    print("Waiting for incoming requests...")
+
+    # --- EAGER LOADING OF RAG COMPONENTS ---
+    # This will now happen once when the application first starts.
+    initialize_rag_components()
+    print("RAG components ready for requests!")
+
+    # Call the function to check models (can be commented out after initial setup)
+    check_gemini_models() # This can be called here, as it doesn't depend on LLM/Retriever
+
+    # Run the Flask app
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
