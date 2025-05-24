@@ -10,14 +10,13 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts import ChatPromptTemplate
-# from langchain.chains.Youtubeing import load_qa_chain # Re-added for explicit chain construction
 from langchain.chains.question_answering import load_qa_chain
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import LLMChain
 
 # --- Flask and related imports ---
-from flask import Flask, request, jsonify # NEW: Flask imports
-import uuid # NEW: To generate session IDs if client doesn't provide one
+from flask import Flask, request, jsonify
+import uuid
 import os
 import google.generativeai as genai
 
@@ -35,13 +34,13 @@ CHROMA_DB_DIRECTORY = "./chroma_db"
 COLLECTION_NAME = "hoa_documents_collection"
 
 # Define the port the Flask app will listen on
-FLASK_PORT = 3010 # NEW: Port for the web service
+FLASK_PORT = 3010
 
 # --- Global variables for the Flask App ---
 # These will be initialized once when the Flask app starts
 llm = None
 retriever = None
-qa_chain_configs = {} # NEW: Dictionary to store qa_chain instances per session_id
+qa_chain_configs = {} # Dictionary to store qa_chain instances per session_id
 
 # --- Function to check available Gemini models (Optional, but useful for initial setup) ---
 # You can comment out the call to this function once you've confirmed your MODEL_TO_USE.
@@ -101,7 +100,6 @@ def initialize_rag_components():
             persist_directory=CHROMA_DB_DIRECTORY,
             collection_name=COLLECTION_NAME
         )
-        # db.persist() is no longer needed/valid for recent Chroma versions with persist_directory set
         print("ChromaDB vector store created and persisted.")
 
     # --- 4. Set up the Language Model (Gemini) ---
@@ -138,9 +136,9 @@ def chat():
     else:
         print(f"Processing for session: {session_id}")
 
-    # Initialize RAG components if they haven't been yet (first request to the app)
-    if llm is None or retriever is None:
-        initialize_rag_components() # Call this only once when the app starts
+    # --- REMOVED LAZY LOADING CHECK ---
+    # llm and retriever are now guaranteed to be initialized when the app starts
+    # No if llm is None or retriever is None: initialize_rag_components() needed here.
 
     # Get or create the qa_chain for this session
     if session_id not in qa_chain_configs:
@@ -166,15 +164,13 @@ If you refer to specific information from the documents, you may briefly mention
 
         # Define the Question Generator Prompt and Chain
         question_generator_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
-        
 
 Chat History:
 {chat_history}
 Follow Up Input: {question}
 Standalone question:"""
         question_generator_prompt = ChatPromptTemplate.from_template(question_generator_template)
-        # question_generator_chain = question_generator_prompt | llm # Use the pipe syntax for simpler chain
-        question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt) # CORRECTED LINE
+        question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt)
 
         # Define the Combine Documents Chain
         combine_docs_chain = load_qa_chain(llm, chain_type="stuff", prompt=combine_docs_prompt)
@@ -205,20 +201,18 @@ def health_check():
     return jsonify({"status": "healthy", "message": "HOA Assistant is running"}), 200
 
 
-# --- Main execution block ---
+# --- Main execution block (Eager Loading) ---
 if __name__ == '__main__':
-    # Initial setup for RAG components (only once at app start)
-    # Note: We commented out the direct call here and moved it into the /chat endpoint
-    # to ensure it's loaded AFTER Flask is fully initialized and ready to handle requests,
-    # though it will now be lazily loaded on the first /chat request.
-    # For a large model, eager loading (before app.run) might be better,
-    # but for simplicity for first phase, lazy loading on first request is fine.
-    # initialize_rag_components() # Moved this call into the /chat route for lazy loading
-
     print(f"\nStarting HOA Assistant Flask app on http://127.0.0.1:{FLASK_PORT}")
     print("Waiting for incoming requests...")
+
+    # --- EAGER LOADING OF RAG COMPONENTS ---
+    # This will now happen once when the application first starts.
+    initialize_rag_components()
+    print("RAG components ready for requests!")
+
     # Call the function to check models (can be commented out after initial setup)
     check_gemini_models() # This can be called here, as it doesn't depend on LLM/Retriever
 
     # Run the Flask app
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False) # debug=True is good for dev, but disable in prod
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
