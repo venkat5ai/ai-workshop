@@ -9,3 +9,5 @@ langchain_google_genai
 langchain_community
 protobuf==3.20.3
 google-generativeai
+langchain-huggingface
+langchain-chroma
