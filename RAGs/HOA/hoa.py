@@ -26,6 +26,11 @@ PDF_DIRECTORY = "./data"
 # Define the directory where your ChromaDB vector store will be saved
 CHROMA_DB_DIRECTORY = "./chroma_db"
 
+# Define the directory where your ChromaDB vector store will be saved
+CHROMA_DB_DIRECTORY = "./chroma_db"
+# Define a meaningful name for your ChromaDB collection
+COLLECTION_NAME = "hoa_docs_collection"
+
 # --- Function to check available Gemini models (Optional, but useful for initial setup) ---
 # You can comment out the call to this function once you've confirmed your MODEL_TO_USE.
 def check_gemini_models():
@@ -75,11 +80,17 @@ embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 if os.path.exists(CHROMA_DB_DIRECTORY) and os.listdir(CHROMA_DB_DIRECTORY):
     print("Loading existing ChromaDB vector store...")
-    db = Chroma(persist_directory=CHROMA_DB_DIRECTORY, embedding_function=embeddings)
+    # Load with the specified collection name
+    db = Chroma(persist_directory=CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=COLLECTION_NAME) # UPDATED
 else:
     print("Creating new ChromaDB vector store...")
-    db = Chroma.from_documents(texts, embeddings, persist_directory=CHROMA_DB_DIRECTORY)
-    db.persist()
+    # Create with the specified collection name
+    db = Chroma.from_documents(
+        texts,
+        embeddings,
+        persist_directory=CHROMA_DB_DIRECTORY,
+        collection_name=COLLECTION_NAME # UPDATED
+    )    
     print("ChromaDB vector store created and persisted.")
 
 # --- 4. Set up the Language Model (Gemini) ---
