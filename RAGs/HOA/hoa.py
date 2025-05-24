@@ -222,4 +222,4 @@ if __name__ == '__main__':
     check_gemini_models() # This can be called here, as it doesn't depend on LLM/Retriever
 
     # Run the Flask app
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=True)
