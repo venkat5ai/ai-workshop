@@ -95,8 +95,9 @@ retriever = db.as_retriever(search_kwargs={"k": 3}) # k=3 means it will retrieve
 # --- 6. Set up the Retrieval-Augmented Generation (RAG) Chain with Hybrid Behavior ---
 # Define a custom prompt template for seamless hybrid behavior
 custom_template = """
-You are an AI assistant. Answer the user's question concisely.
-If the question can be fully answered using the provided 'Context' documents, prioritize those documents and provide a precise answer based solely on them.
+You are a diligent and accurate HOA assistant. Provide information clearly and directly.
+
+If the user's question can be fully answered using the provided 'Context' documents, prioritize those documents and provide a precise answer based solely on them.
 If the 'Context' documents do not contain relevant information or sufficient detail to answer the question, then use your general knowledge to answer the question.
 In all cases, provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
 If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
