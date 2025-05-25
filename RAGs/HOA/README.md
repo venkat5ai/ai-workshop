@@ -300,3 +300,4 @@ User Authentication/Authorization: Add a login system to restrict access to the 
 Error Handling and Logging: More robust logging and error handling for production environments.
 Advanced RAG Techniques: Explore more sophisticated retrieval methods (e.g., HyDE, Cohere Rerank) or multi-modal RAG.
 Deployment Automation: Scripts or configurations for automated deployment to cloud platforms (AWS, GCP, Azure).
+   
