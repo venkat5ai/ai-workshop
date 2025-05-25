@@ -7,6 +7,9 @@ import uuid
 import os
 import logging
 import google.generativeai as genai
+import shutil
+import time # NEW: Import time module for sleep
+import gc   # NEW: Import gc module for garbage collection
 
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify, render_template
@@ -16,6 +19,7 @@ from flask_cors import CORS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
@@ -35,9 +39,10 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-qa_chain_configs = {} # Dictionary to store qa_chain instances per session_id
+qa_chain_configs = {}
+db = None # NEW: Declare db as global, will be initialized in rebuild_knowledge_base
 
-# --- Function to check available Gemini models (Optional, but useful for initial setup) ---
+# --- Function to check available Gemini models ---
 def check_gemini_models():
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -45,7 +50,6 @@ def check_gemini_models():
         return []
 
     genai.configure(api_key=api_key)
-    
     logger.info("--- Checking available Gemini models ---")
     available_models = []
     try:
@@ -58,52 +62,134 @@ def check_gemini_models():
         logger.error("Please double-check your GOOGLE_API_KEY and internet connection.")
     return available_models
 
-# --- Function to initialize the RAG components ---
-def initialize_rag_components():
-    global llm, retriever
+# --- Function to load documents and rebuild ChromaDB (without clearing data/ directory) ---
+def rebuild_knowledge_base():
+    global llm, retriever, qa_chain_configs, db # Added db to global here
 
-    # --- 1. Load PDF Documents ---
-    logger.info(f"Loading documents from: {config.PDF_DIRECTORY}")
+    logger.info(f"Starting knowledge base rebuild from: {config.PDF_DIRECTORY}")
+    documents = []
+
     try:
-        loader = PyPDFDirectoryLoader(config.PDF_DIRECTORY)
-        documents = loader.load()
-        logger.info(f"Loaded {len(documents)} document(s).")
-    except Exception as e:
-        logger.error(f"Error loading documents: {e}")
-        logger.error(f"Please ensure the directory '{config.PDF_DIRECTORY}' exists and contains PDF files.")
-        logger.error("Also, check file permissions for the directory.")
-        exit()
+        # Load PDFs
+        pdf_loader = PyPDFDirectoryLoader(config.PDF_DIRECTORY)
+        documents.extend(pdf_loader.load())
+        logger.info(f"Loaded PDFs from '{config.PDF_DIRECTORY}'. Current documents count: {len(documents)}")
 
-    # --- 2. Split Documents into Chunks ---
+        # Load TXT files
+        for filename in os.listdir(config.PDF_DIRECTORY):
+            filepath = os.path.join(config.PDF_DIRECTORY, filename)
+            if os.path.isfile(filepath) and filename.lower().endswith(".txt"):
+                txt_loader = TextLoader(filepath)
+                documents.extend(txt_loader.load())
+                logger.info(f"Loaded text file: {filename}")
+            elif os.path.isfile(filepath) and not filename.lower().endswith((".pdf", ".txt")):
+                logger.info(f"Skipping unsupported file type: {filename}")
+                
+    except Exception as e:
+        logger.error(f"Error during document loading from '{config.PDF_DIRECTORY}': {e}")
+        logger.error("Check your PDF/TXT files and directory structure.")
+        raise # Re-raise the exception to be caught by the calling function
+
+    if not documents:
+        logger.warning(f"No supported documents found in '{config.PDF_DIRECTORY}'. The RAG will rely purely on LLM general knowledge.")
+        retriever = None # Ensure retriever is None if no documents
+        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE) # Still initialize LLM
+        logger.info("Only LLM initialized as no documents found for RAG.")
+        qa_chain_configs.clear() # Clear all existing session memories if KB is purged
+        return
+
+    logger.info(f"Total pages/files processed for knowledge base: {len(documents)}.")
+
+    # Split Documents into Chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     texts = text_splitter.split_documents(documents)
     logger.info(f"Split documents into {len(texts)} chunks.")
 
-    # --- 3. Create Embeddings and Store in ChromaDB ---
+    # Create Embeddings and Store in ChromaDB
     logger.info("Creating embeddings and storing in ChromaDB...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    if os.path.exists(config.CHROMA_DB_DIRECTORY) and os.listdir(config.CHROMA_DB_DIRECTORY):
-        logger.info("Loading existing ChromaDB vector store...")
-        db = Chroma(persist_directory=config.CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=config.COLLECTION_NAME)
-    else:
-        logger.info("Creating new ChromaDB vector store...")
-        db = Chroma.from_documents(
-            texts,
-            embeddings,
-            persist_directory=config.CHROMA_DB_DIRECTORY,
-            collection_name=config.COLLECTION_NAME
-        )
-        logger.info("ChromaDB vector store created and persisted.")
+    # --- FIX START: Release ALL relevant references and retry deletion ---
+    # Explicitly clear global references to potentially held ChromaDB objects and chains
+    retriever = None
+    llm = None
+    qa_chain_configs.clear()
+    db = None # NEW: Explicitly clear the db object reference
 
-    # --- 4. Set up the Language Model (Gemini) ---
+    gc.collect() # NEW: Force garbage collection to release handles
+
+    # Clear previous ChromaDB instance (if any) before creating a new one
+    if os.path.exists(config.CHROMA_DB_DIRECTORY):
+        max_retries = 5
+        retry_delay = 0.5 # seconds
+        for i in range(max_retries):
+            try:
+                shutil.rmtree(config.CHROMA_DB_DIRECTORY)
+                logger.info(f"Deleted existing ChromaDB at '{config.CHROMA_DB_DIRECTORY}'.")
+                break # Success, exit retry loop
+            except OSError as e:
+                if i < max_retries - 1:
+                    logger.warning(f"Attempt {i+1}/{max_retries}: Error deleting ChromaDB directory: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to delete ChromaDB after {max_retries} attempts: {e}. Another process might be holding files.")
+                    raise # Re-raise if still failing after retries
+    # --- FIX END ---
+
+    # Re-instantiate db, llm, retriever after successful deletion/creation
+    db = Chroma.from_documents( # This creates the new db instance
+        texts,
+        embeddings,
+        persist_directory=config.CHROMA_DB_DIRECTORY,
+        collection_name=config.COLLECTION_NAME
+    )
+    logger.info("ChromaDB vector store created and persisted from all current documents.")
+
+    # Re-Set up the Language Model (Gemini)
     llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
     logger.info(f"Using Gemini model: {config.GEMINI_MODEL_TO_USE}")
 
-    # --- 5. Create the Retriever ---
+    # Re-Create the Retriever
     retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
     
-    logger.info("\nRAG components initialized.")
+    logger.info("RAG components rebuilt successfully.")
+
+
+# --- Main Initialization on App Startup ---
+# This function will now be responsible for the initial cleanup AND rebuilding.
+def initialize_app_on_startup():
+    global db # NEW: Declare db as global here too for initial cleanup
+    logger.info(f"Preparing application environment: Cleaning '{config.PDF_DIRECTORY}' and '{config.CHROMA_DB_DIRECTORY}'.")
+    try:
+        # Clear all files and subdirectories from the PDF_DIRECTORY
+        if os.path.exists(config.PDF_DIRECTORY):
+            for filename in os.listdir(config.PDF_DIRECTORY):
+                file_path = os.path.join(config.PDF_DIRECTORY, filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path) # Delete file or symlink
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path) # Delete sub-directories
+            logger.info(f"Cleared all content from '{config.PDF_DIRECTORY}'.")
+        else:
+            os.makedirs(config.PDF_DIRECTORY, exist_ok=True) # Ensure it exists if it was deleted
+            logger.info(f"Created '{config.PDF_DIRECTORY}' as it did not exist.")
+
+        # Delete the ChromaDB directory (this will be rebuilt by rebuild_knowledge_base)
+        if os.path.exists(config.CHROMA_DB_DIRECTORY):
+            # Ensure any references are released before deletion during initial startup too
+            db = None # Clear global db reference
+            gc.collect() # Force garbage collection
+            shutil.rmtree(config.CHROMA_DB_DIRECTORY)
+            logger.info(f"Deleted existing ChromaDB at '{config.CHROMA_DB_DIRECTORY}'.")
+        
+    except Exception as e:
+        logger.error(f"Critical error during initial cleanup: {e}. Please check file permissions.")
+        exit() # Cannot proceed without clean environment
+
+    # Now, rebuild the knowledge base (which will be empty if no initial docs are copied to data/ after cleanup)
+    rebuild_knowledge_base() # Call the new function for initial setup
+    logger.info("RAG components ready for requests!")
+
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -113,6 +199,50 @@ CORS(app) # Enable CORS for all routes
 @app.route('/')
 def index():
     return render_template('index.html')
+
+# --- API Endpoint for Document Upload ---
+@app.route('/api/upload', methods=['POST'])
+def api_upload():
+    if 'file' not in request.files:
+        logger.warning("No 'file' part in the upload request.")
+        return jsonify({"error": "No file part"}), 400
+
+    uploaded_file = request.files['file']
+
+    if uploaded_file.filename == '':
+        logger.warning("No selected file for upload.")
+        return jsonify({"error": "No selected file"}), 400
+
+    filename = uploaded_file.filename
+    # Basic filename sanitation to prevent path traversal
+    if '/' in filename or '\\' in filename:
+        filename = os.path.basename(filename)
+
+    filepath = os.path.join(config.PDF_DIRECTORY, filename) # Saving to PDF_DIRECTORY
+    
+    # Check for allowed file extensions (case-insensitive)
+    allowed_extensions = ('.pdf', '.txt')
+    if not filename.lower().endswith(allowed_extensions):
+        logger.warning(f"Attempted upload of unsupported file type: {filename}")
+        return jsonify({"error": "Unsupported file type. Only PDF and TXT are allowed."}), 400
+
+    try:
+        uploaded_file.save(filepath)
+        logger.info(f"File '{filename}' uploaded successfully to {filepath}")
+
+        # Rebuild RAG components to include the new document
+        logger.info("Triggering full ChromaDB rebuild to include new document(s). This might take a moment...")
+        rebuild_knowledge_base() # Call the new function for rebuilding
+        logger.info("ChromaDB rebuilt successfully with new document(s).")
+        
+        return jsonify({"message": f"File '{filename}' uploaded and knowledge base updated successfully!"}), 200
+
+    except Exception as e:
+        logger.exception(f"Error during file upload or ChromaDB rebuild for '{filename}':")
+        return jsonify({"error": f"Failed to upload or process file: {str(e)}"}), 500
+    
+    logger.error("An unexpected error occurred during /api/upload processing.")
+    return jsonify({"error": "An unexpected error occurred during upload."}), 500
 
 # --- API Endpoint for Chat (for external systems / programmatic access) ---
 @app.route('/api/bot', methods=['POST'])
@@ -207,8 +337,9 @@ if __name__ == '__main__':
 
     # --- EAGER LOADING OF RAG COMPONENTS ---
     # This will now happen once when the application first starts.
-    initialize_rag_components()
-    logger.info("RAG components ready for requests!")
+    # This function now also handles cleanup of old docs and chroma_db
+    initialize_app_on_startup()
+    logger.info("Initial RAG setup complete. App ready.")
 
     # Call the function to check models (can be commented out after initial setup)
     check_gemini_models()
