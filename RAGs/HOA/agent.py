@@ -1,12 +1,13 @@
 # First, ensure you have the necessary libraries installed.
 # You can install them by running the following in your terminal:
-# pip install Flask langchain chromadb pypdf sentence-transformers transformers accelerate bitsandbytes langchain_google_genai langchain-community langchain-huggingface langchain-chroma Flask-CORS
+# pip install Flask langchain chromadb pypdf sentence-transformers langchain-community langchain-huggingface langchain-chroma Flask-CORS
 
 # --- Standard Library Imports ---
 import uuid
 import os
 import logging
-import google.generativeai as genai
+import sys # Import sys to access command-line arguments
+import google.generativeai as genai # Re-add for Gemini API configuration
 
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify, render_template
@@ -17,12 +18,15 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI
+# Conditional imports for LLMs
+from langchain_community.chat_models import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI # Re-add for Gemini LLM
 from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.question_answering import load_qa_chain
-from langchain.chains import ConversationalRetrievalChain
-from langchain.chains import LLMChain
+from langchain.chains import create_history_aware_retriever
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+from langchain_core.messages import HumanMessage, AIMessage # For managing chat history messages
 
 # --- Application Configuration ---
 import config
@@ -35,13 +39,14 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-qa_chain_configs = {} # Dictionary to store qa_chain instances per session_id
+# Modified to store {"chain": chain_instance, "memory": memory_instance}
+qa_chain_configs = {}
 
-# --- Function to check available Gemini models (Optional, but useful for initial setup) ---
+# --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        logger.error("GOOGLE_API_KEY environment variable is not set. Please set it to proceed.")
+        logger.error("GOOGLE_API_KEY environment variable is not set. Please set it to proceed for Gemini model.")
         return []
 
     genai.configure(api_key=api_key)
@@ -55,11 +60,11 @@ def check_gemini_models():
         logger.info("--- End of available models ---")
     except Exception as e:
         logger.error(f"Error listing models: {e}")
-        logger.error("Please double-check your GOOGLE_API_KEY and internet connection.")
+        logger.error("Please double-check your GOOGLE_API_KEY and internet connection if using Gemini.")
     return available_models
 
 # --- Function to initialize the RAG components ---
-def initialize_rag_components():
+def initialize_rag_components(model_mode):
     global llm, retriever
 
     # --- 1. Load PDF Documents ---
@@ -96,9 +101,21 @@ def initialize_rag_components():
         )
         logger.info("ChromaDB vector store created and persisted.")
 
-    # --- 4. Set up the Language Model (Gemini) ---
-    llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
-    logger.info(f"Using Gemini model: {config.GEMINI_MODEL_TO_USE}")
+    # --- 4. Set up the Language Model (Conditional based on mode) ---
+    if model_mode == "local":
+        llm = ChatOllama(model=config.OLLAMA_MODEL_TO_USE)
+        logger.info(f"Using Ollama local model: {config.OLLAMA_MODEL_TO_USE}")
+    elif model_mode == "cloud":
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            logger.error("GOOGLE_API_KEY environment variable is not set. Cannot use Gemini model.")
+            sys.exit(1) # Exit if API key is missing for cloud mode
+        genai.configure(api_key=api_key) # Configure the API key for Gemini
+        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
+        logger.info(f"Using Google Gemini cloud model: {config.GEMINI_MODEL_TO_USE}")
+    else:
+        logger.error(f"Invalid model mode: {model_mode}. Please use 'local' or 'cloud'.")
+        sys.exit(1)
 
     # --- 5. Create the Retriever ---
     retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
@@ -137,56 +154,68 @@ def api_bot():
     else:
         logger.info(f"Processing for session: {session_id}")
 
-    # Get or create the qa_chain for this session
+    # Get or create the qa_chain and memory for this session
     if session_id not in qa_chain_configs:
-        logger.info(f"Setting up new qa_chain for session {session_id}")
+        logger.info(f"Setting up new chain and memory for session {session_id}")
+        
+        # Initialize memory for this session
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-        # Define the custom prompt template for the final answer generation
-        custom_template = """
-You are a diligent and accurate HOA assistant. Provide information clearly and directly.
+        # --- NEW LangChain 0.1.x+ recommended approach ---
+        # 1. Create a history-aware retriever
+        history_aware_retriever_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language."),
+            ("placeholder", "{chat_history}"),
+            ("user", "{input}"),
+            ("user", "Standalone question:"),
+        ])
+        
+        history_aware_retriever = create_history_aware_retriever(
+            llm, retriever, history_aware_retriever_prompt
+        )
 
-Chat History:
-{chat_history}
-Context:
-{context}
-Question:
-{question}
-
+        # 2. Create a chain to combine documents and answer the question
+        qa_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a diligent and accurate HOA assistant. Provide information clearly and directly.
 Based on the chat history and the provided context documents (if relevant), or your general knowledge (if context is not relevant), answer the user's question. Provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
 If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
-"""
-        # Create the prompt from the template
-        combine_docs_prompt = ChatPromptTemplate.from_template(custom_template)
 
-        # Define the Question Generator Prompt and Chain
-        question_generator_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
+Context: {context}"""),
+            ("placeholder", "{chat_history}"),
+            ("user", "{input}"),
+        ])
+        
+        Youtube_chain = create_stuff_documents_chain(llm, qa_prompt) # Renamed from Youtube_chain
 
-Chat History:
-{chat_history}
-Follow Up Input: {question}
-Standalone question:"""
-        question_generator_prompt = ChatPromptTemplate.from_template(question_generator_template)
-        question_generator_chain = LLMChain(llm=llm, prompt=question_generator_prompt)
-
-        # Define the Combine Documents Chain
-        combine_docs_chain = load_qa_chain(llm, chain_type="stuff", prompt=combine_docs_prompt)
-
-        # Initialize the ConversationalRetrievalChain explicitly
-        session_qa_chain = ConversationalRetrievalChain(
-            retriever=retriever,
-            question_generator=question_generator_chain,
-            combine_docs_chain=combine_docs_chain,
-            memory=memory,
-        )
-        qa_chain_configs[session_id] = session_qa_chain
+        # 3. Create the final retrieval chain
+        session_qa_chain = create_retrieval_chain(history_aware_retriever, Youtube_chain)
+        
+        # Store both the chain and its associated memory
+        qa_chain_configs[session_id] = {"chain": session_qa_chain, "memory": memory}
     else:
-        session_qa_chain = qa_chain_configs[session_id]
+        # Retrieve both the chain and its associated memory
+        session_qa_chain = qa_chain_configs[session_id]["chain"]
+        memory = qa_chain_configs[session_id]["memory"]
+
 
     # Process the question
     try:
-        result = session_qa_chain({"question": question})
-        answer = result['answer']
+        # Get chat history from memory for the current session
+        chat_history_messages = memory.load_memory_variables({})["chat_history"]
+
+        # Prepare input for the new chain structure
+        invoke_input = {"input": question, "chat_history": chat_history_messages}
+
+        # Invoke the new chain
+        result = session_qa_chain.invoke(invoke_input)
+
+        # The answer is typically in result['answer'] for create_retrieval_chain
+        answer = result.get('answer', 'No answer found.')
+        
+        # Save the new user message and bot response to memory
+        memory.save_context({"input": question}, {"output": answer})
+
+
         logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")
         return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
@@ -205,13 +234,23 @@ if __name__ == '__main__':
     logger.info(f"Starting HOA Assistant Flask app on http://127.0.0.1:{config.FLASK_PORT}")
     logger.info("Waiting for incoming requests...")
 
+    # Check for model mode argument
+    if len(sys.argv) > 1:
+        model_mode = sys.argv[1].lower() # Get the argument and convert to lowercase
+    else:
+        # Default to 'cloud' if no argument is provided
+        model_mode = "cloud"
+        logger.info("No model mode provided. Defaulting to 'cloud' mode.")
+
+
     # --- EAGER LOADING OF RAG COMPONENTS ---
     # This will now happen once when the application first starts.
-    initialize_rag_components()
+    initialize_rag_components(model_mode)
     logger.info("RAG components ready for requests!")
 
-    # Call the function to check models (can be commented out after initial setup)
-    check_gemini_models()
+    # If running in cloud mode, check Gemini models (optional)
+    if model_mode == "cloud":
+        check_gemini_models()
 
     # Run the Flask app
     app.run(host='0.0.0.0', port=config.FLASK_PORT, debug=False)

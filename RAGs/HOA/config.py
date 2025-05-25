@@ -17,9 +17,9 @@ COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "hoa_documents_collection"
 # but LangChain automatically picks it up from the environment.
 GEMINI_MODEL_TO_USE = os.getenv("GEMINI_MODEL_TO_USE", "models/gemini-2.5-flash-preview-05-20")
 
-# Ollama LLM Configuration (New)
+# Ollama LLM Configuration
 # Set the model to use from your local Ollama installation
-OLLAMA_MODEL_TO_USE = os.getenv("OLLAMA_MODEL_TO_USE", "llama2:latest")
+OLLAMA_MODEL_TO_USE = os.getenv("OLLAMA_MODEL_TO_USE", "gemma3:latest")
 
 # RAG Configuration
 RETRIEVER_SEARCH_K = int(os.getenv("RETRIEVER_SEARCH_K", 3))
