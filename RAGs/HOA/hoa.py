@@ -5,7 +5,7 @@
 # --- Standard Library Imports ---
 import uuid
 import os
-import logging # NEW: For logging
+import logging
 import google.generativeai as genai
 
 # --- Flask and related imports ---
@@ -25,12 +25,12 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import LLMChain
 
 # --- Application Configuration ---
-import config # NEW: Import config settings
+import config
 
 # --- Logging Setup ---
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL),
                     format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__) # NEW: Get a logger instance
+logger = logging.getLogger(__name__)
 
 # --- Global variables for the Flask App ---
 llm = None
@@ -60,19 +60,19 @@ def check_gemini_models():
 
 # --- Function to initialize the RAG components ---
 def initialize_rag_components():
-    global llm, retriever # Use global to modify the global variables
+    global llm, retriever
 
     # --- 1. Load PDF Documents ---
-    logger.info(f"Loading documents from: {config.PDF_DIRECTORY}") # Use config
+    logger.info(f"Loading documents from: {config.PDF_DIRECTORY}")
     try:
-        loader = PyPDFDirectoryLoader(config.PDF_DIRECTORY) # Use config
+        loader = PyPDFDirectoryLoader(config.PDF_DIRECTORY)
         documents = loader.load()
         logger.info(f"Loaded {len(documents)} document(s).")
     except Exception as e:
         logger.error(f"Error loading documents: {e}")
-        logger.error(f"Please ensure the directory '{config.PDF_DIRECTORY}' exists and contains PDF files.") # Use config
+        logger.error(f"Please ensure the directory '{config.PDF_DIRECTORY}' exists and contains PDF files.")
         logger.error("Also, check file permissions for the directory.")
-        exit() # Exit on critical error during startup
+        exit()
 
     # --- 2. Split Documents into Chunks ---
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -83,30 +83,30 @@ def initialize_rag_components():
     logger.info("Creating embeddings and storing in ChromaDB...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    if os.path.exists(config.CHROMA_DB_DIRECTORY) and os.listdir(config.CHROMA_DB_DIRECTORY): # Use config
+    if os.path.exists(config.CHROMA_DB_DIRECTORY) and os.listdir(config.CHROMA_DB_DIRECTORY):
         logger.info("Loading existing ChromaDB vector store...")
-        db = Chroma(persist_directory=config.CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=config.COLLECTION_NAME) # Use config
+        db = Chroma(persist_directory=config.CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=config.COLLECTION_NAME)
     else:
         logger.info("Creating new ChromaDB vector store...")
         db = Chroma.from_documents(
             texts,
             embeddings,
-            persist_directory=config.CHROMA_DB_DIRECTORY, # Use config
-            collection_name=config.COLLECTION_NAME # Use config
+            persist_directory=config.CHROMA_DB_DIRECTORY,
+            collection_name=config.COLLECTION_NAME
         )
         logger.info("ChromaDB vector store created and persisted.")
 
     # --- 4. Set up the Language Model (Gemini) ---
-    llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE) # Use config
-    logger.info(f"Using Gemini model: {config.GEMINI_MODEL_TO_USE}") # Use config
+    llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
+    logger.info(f"Using Gemini model: {config.GEMINI_MODEL_TO_USE}")
 
     # --- 5. Create the Retriever ---
-    retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K}) # Use config
+    retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
     
     logger.info("\nRAG components initialized.")
 
 # --- Flask App Setup ---
-app = Flask(__name__) # Initialize Flask app
+app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
 
 # --- Route for the Web UI (e.g., for local testing and debugging) ---
@@ -187,10 +187,10 @@ Standalone question:"""
     try:
         result = session_qa_chain({"question": question})
         answer = result['answer']
-        logger.info(f"Answered for session {session_id}: '{question[:50]}...'")
+        logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")
         return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
-        logger.exception(f"An error occurred during chat for session {session_id} with question '{question}':") # Log exception details
+        logger.exception(f"An error occurred during chat for session {session_id} with question '{question}':")
         return jsonify({"error": "An internal error occurred while processing your request.", "details": str(e)}), 500
 
 # --- Health Check Endpoint (Optional but Recommended) ---
@@ -202,7 +202,7 @@ def health_check():
 
 # --- Main execution block (Eager Loading) ---
 if __name__ == '__main__':
-    logger.info(f"Starting HOA Assistant Flask app on http://127.0.0.1:{config.FLASK_PORT}") # Use config
+    logger.info(f"Starting HOA Assistant Flask app on http://127.0.0.1:{config.FLASK_PORT}")
     logger.info("Waiting for incoming requests...")
 
     # --- EAGER LOADING OF RAG COMPONENTS ---
@@ -211,7 +211,7 @@ if __name__ == '__main__':
     logger.info("RAG components ready for requests!")
 
     # Call the function to check models (can be commented out after initial setup)
-    check_gemini_models() # This can be called here, as it doesn't depend on LLM/Retriever
+    check_gemini_models()
 
     # Run the Flask app
-    app.run(host='0.0.0.0', port=config.FLASK_PORT, debug=False) # Use config and set debug=False for better practice
+    app.run(host='0.0.0.0', port=config.FLASK_PORT, debug=False)
