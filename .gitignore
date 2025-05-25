@@ -1,0 +1,47 @@
+# Python bytecode files
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# Virtual environment directory
+venv/
+.venv/
+env/
+.env/
+
+# Local database files
+chroma_db/
+
+# Environment variables file (if used locally for development)
+.env
+
+# Flask specific (if not using gunicorn/wsgi server, these are temporary)
+*.flaskenv
+
+# Editor/IDE specific files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Jupyter / IPython Notebook related files
+.ipynb_checkpoints
+.ipython/
+.jupyter/
+
+# Test / Coverage files
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Logs and other temporary files
+*.log
+*.tmp
+*.bak
