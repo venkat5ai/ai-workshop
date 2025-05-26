@@ -13,6 +13,9 @@ env/
 # Local database files
 chroma_db/
 
+# Knowledge Base documents (uploaded by users)
+data/
+
 # Environment variables file (if used locally for development)
 .env
 
