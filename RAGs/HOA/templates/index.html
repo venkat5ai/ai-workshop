@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HOA Assistant Chat</title>
+    <title>Document Assistant Chat</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -97,9 +97,9 @@
 </head>
 <body>
     <div class="chat-container">
-        <div class="chat-header">HOA Assistant Chatbot</div>
+        <div class="chat-header">Document Assistant Chatbot</div>
         <div class="chat-messages" id="chat-messages">
-            <div class="message bot">Hello! How can I help you with your HOA documents today?</div>
+            <div class="message bot">Hello! How can I help you with your documents today?</div>
         </div>
         <div class="loading-indicator" id="loading-indicator">Assistant is typing...</div>
         <div class="chat-input">
@@ -115,10 +115,10 @@
         const loadingIndicator = document.getElementById('loading-indicator');
 
         // Retrieve session_id from local storage or generate a new one
-        let sessionId = localStorage.getItem('hoaAssistantSessionId');
+        let sessionId = localStorage.getItem('documentAssistantSessionId'); // Renamed session ID key
         if (!sessionId) {
             sessionId = crypto.randomUUID(); // Generates a UUID
-            localStorage.setItem('hoaAssistantSessionId', sessionId);
+            localStorage.setItem('documentAssistantSessionId', sessionId); // Renamed session ID key
             console.log('New session ID generated and stored:', sessionId);
         } else {
             console.log('Using existing session ID:', sessionId);
@@ -157,10 +157,8 @@
 
                 if (response.ok) {
                     displayMessage(data.answer, 'bot');
-                    // Update session ID in case the backend assigned a new one (though our backend logic keeps it same)
-                    // Not strictly necessary for our backend, but good practice if session management changes
                     sessionId = data.session_id || sessionId;
-                    localStorage.setItem('hoaAssistantSessionId', sessionId);
+                    localStorage.setItem('documentAssistantSessionId', sessionId); // Renamed session ID key
                 } else {
                     displayMessage(`Error: ${data.error || 'Failed to get a response.'}`, 'bot');
                 }
@@ -183,9 +181,8 @@
         });
 
         // Clear session ID from localStorage when the page is closed or reloaded
-        // This simulates "session closed when page closes"
         window.addEventListener('beforeunload', () => {
-            localStorage.removeItem('hoaAssistantSessionId');
+            localStorage.removeItem('documentAssistantSessionId'); // Renamed session ID key
             console.log('Session ID cleared from localStorage on page unload.');
         });
 
