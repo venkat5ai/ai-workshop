@@ -70,15 +70,14 @@ CORS(app)
 # --- Tool Definitions ---
 def get_current_weather(location: str) -> str:
     """
-    Fetches current weather data for a given location (zip code or city name)
-    using OpenWeatherMap. Defaults to US for zip codes.
+    Fetches current weather data for a given location (zip code, city, city,state, or city,country)
+    using OpenWeatherMap.
 
     Args:
-        location (str): The zip code (e.g., "28227") or city name (e.g., "London").
-                        For zip codes, assume US country code for now.
+        location (str): The location string (e.g., "28227", "London", "Ashburn, VA", "Paris, FR").
 
     Returns:
-        str: A JSON string of the weather data summary, or an error message.
+        str: A summarized string of the weather data, or an informative error message.
     """
     api_key = os.getenv("OPENWEATHER_API_KEY")
     if not api_key:
@@ -89,11 +88,23 @@ def get_current_weather(location: str) -> str:
         "appid": api_key,
         "units": "imperial" # or "metric" for Celsius
     }
-    if location.isdigit() and len(location) == 5: # Simple check for US zip code
-        params["zip"] = f"{location},us"
-    else: # Assume it's a city name
-        params["q"] = location
+
+    # Attempt to parse location more robustly
+    parts = [p.strip() for p in location.split(',')]
     
+    # Try to infer location based on common patterns
+    if len(parts) == 1:
+        if parts[0].isdigit() and len(parts[0]) == 5:
+            params["zip"] = f"{parts[0]},us" # Assume US for 5-digit zip
+        else:
+            params["q"] = parts[0] # Assume it's a city name
+    elif len(parts) == 2:
+        params["q"] = f"{parts[0]},{parts[1]}" # Assume city, state/country code
+    elif len(parts) >= 3:
+        params["q"] = f"{parts[0]},{parts[1]},{parts[2]}" # Assume city, state, country
+    else:
+        return f"Invalid location format: '{location}'. Please provide a city, zip code, or city,state/country."
+
     try:
         response = requests.get(config.OPENWEATHER_BASE_URL, params=params)
         response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
@@ -104,33 +115,34 @@ def get_current_weather(location: str) -> str:
             weather_desc = weather_data["weather"][0]["description"]
             city_name = weather_data.get("name", location)
             
-            summary = {
-                "location": city_name,
-                "temperature_f": main_info.get("temp"),
-                "feels_like_f": main_info.get("feels_like"),
-                "humidity_percent": main_info.get("humidity"),
-                "weather_description": weather_desc,
-                "wind_speed_mph": weather_data.get("wind", {}).get("speed")
-            }
-            return json.dumps(summary)
+            # --- IMPORTANT: SUMMARIZE TOOL OUTPUT FOR LLM ---
+            summary = (
+                f"Current weather in {city_name}: "
+                f"{main_info.get('temp')}°F, feels like {main_info.get('feels_like')}°F. "
+                f"Conditions: {weather_desc}. Humidity: {main_info.get('humidity')}%. "
+                f"Wind speed: {weather_data.get('wind', {}).get('speed')} mph."
+            )
+            return summary
         else:
-            return f"Could not parse weather data for {location}. Full response: {weather_data}"
+            return f"Could not retrieve full weather data for '{location}'. API response was incomplete."
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API call to OpenWeatherMap: {e}")
-        return f"Failed to retrieve weather data: {e}"
+        logger.error(f"Error making API call to OpenWeatherMap for '{location}': {e}")
+        if "404 Client Error" in str(e):
+             return f"Weather data not found for the location '{location}'. Please ensure the location is valid and spelled correctly. If it's a city, try adding a state (e.g., 'Ashburn, VA') or country (e.g., 'Paris, FR')."
+        return f"Failed to retrieve weather data due to API error: {e}. Check network connection or API key."
     except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON from OpenWeatherMap response: {e}")
-        return f"Failed to parse weather data response."
+        logger.error(f"Error decoding JSON from OpenWeatherMap response for '{location}': {e}")
+        return f"Failed to parse weather data response from API."
     except Exception as e:
-        logger.error(f"An unexpected error occurred in get_current_weather: {e}")
+        logger.error(f"An unexpected error occurred in get_current_weather for '{location}': {e}")
         return "An unexpected error occurred while fetching weather data."
 
 # Define the weather tool (this can be global as it doesn't need session-specific state)
 weather_tool = Tool(
     name="get_current_weather",
     func=get_current_weather,
-    description="Useful for fetching current weather conditions. Input should be a zip code (string) or a precise city name (string), e.g., '90210' or 'London'. If the city name is ambiguous, you might need to specify a state or country for better accuracy."
+    description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
 )
 
 
@@ -219,7 +231,9 @@ def initialize_rag_components(model_mode: str):
             logger.error("GOOGLE_API_KEY environment variable is not set. Cannot use Gemini model.")
             sys.exit(1)
         genai.configure(api_key=api_key)
-        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE, temperature=0.0)
+        # Using a slightly higher temperature (e.g., 0.2) can sometimes help with agent reasoning
+        # and natural language generation, reducing InternalServerErrors.
+        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE, temperature=0.2) 
         logger.info(f"Using Google Gemini cloud model: {config.GEMINI_MODEL_TO_USE}")
     else:
         logger.error(f"Invalid model mode: {model_mode}. Please use 'local' or 'cloud'.")
@@ -330,16 +344,16 @@ Context: {context}"""),
         # 4. Create the Agent
         # --- MODIFIED AGENT PROMPT ---
         agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful and versatile AI assistant.
-            Your primary goal is to answer questions accurately and directly.
-
-            **Here are your guidelines:**
-            1. **Tool Usage:** If a question can be answered by using one of your tools (e.g., about documents or current weather), you MUST use the appropriate tool.
-            2. **Document Questions:** If the question is about the uploaded documents, use the `document_qa_retriever` tool.
-            3. **Weather Questions:** If the question is about current weather, use the `get_current_weather` tool. When asking for weather, if the location is vague or incomplete, try to infer a common location (e.g., "NYC" for New York City) or ask the user for clarification before calling the tool. Prioritize providing a precise location to the tool (e.g., "London" or "90210").
-            4. **General Knowledge:** If a question cannot be answered by any of your tools, use your general knowledge to provide a concise and relevant answer. Do not apologize for not having a tool if you can answer with general knowledge.
-            5. **Direct Answers:** Always provide a direct answer. Avoid conversational filler or unnecessary pleasantries.
-            6. **Thought Process:** Think step-by-step. Break down complex requests to determine the best approach (tool or general knowledge)."""),
+            ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
+            
+            **Prioritize tool usage when appropriate:**
+            - **Document Questions:** Use `document_qa_retriever` to find answers in the uploaded documents.
+            - **Weather Questions:** Use `get_current_weather` for current weather conditions.
+                - **Important:** If the location is vague (e.g., "Ashburn") or appears incorrect (e.g., "Ashburn NC"), try to infer the most likely precise location (e.g., "Ashburn, VA" if common) or, if unsure, **ask the user for clarification (e.g., "Which Ashburn are you referring to?")** before calling the tool. Provide the most precise location possible to the tool (e.g., "London", "90210", "Ashburn, VA", "Paris, FR").
+            
+            **For general knowledge questions that do not require tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?"), use your inherent knowledge to provide a concise and relevant answer. Do not apologize for not using a tool if you can answer directly.
+            
+            Always provide a direct answer. Think step-by-step to determine the best approach (tool or general knowledge)."""),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
