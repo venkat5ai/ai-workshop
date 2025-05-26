@@ -300,4 +300,13 @@ User Authentication/Authorization: Add a login system to restrict access to the 
 Error Handling and Logging: More robust logging and error handling for production environments.
 Advanced RAG Techniques: Explore more sophisticated retrieval methods (e.g., HyDE, Cohere Rerank) or multi-modal RAG.
 Deployment Automation: Scripts or configurations for automated deployment to cloud platforms (AWS, GCP, Azure).
-   
+
+### Docker commands to build and run and exec
+Pre-requisite: the host system should have the ./data/ dir (with all the .pdf, .txt, .doc, .xlsx files) from where the docker run command is run.
+```
+docker build -t venkat5ai/ai-agent-doc:1.0 -t venkat5ai/ai-agent-doc:latest .
+
+docker run --name ai-agent-doc --rm -p 3010:3010 -v "./data:/app/data" -v "./chroma_db:/app/chroma_db" -e GOOGLE_API_KEY="%GOOGLE_API_KEY%"  venkat5ai/ai-agent-doc:latest cloud
+
+docker exec -it ai-agent-doc sh
+```
