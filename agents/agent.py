@@ -2,6 +2,12 @@
 # You can install them by running the following in your terminal:
 # pip install Flask langchain chromadb pypdf sentence-transformers langchain-community langchain-huggingface langchain-chroma Flask-CORS unstructured[pdf,docx,csv,pptx] python-magic python-docx openpyxl
 
+"""
+This script implements a Retrieval-Augmented Generation (RAG) assistant
+using Flask for the API, LangChain for orchestration, and various
+libraries for document processing and LLM interaction. It supports
+both local (Ollama) and cloud (Google Gemini) LLM modes.
+"""
 
 # --- IMPORTANT: Patch sqlite3 for ChromaDB compatibility ---
 # This must be the very first lines, before any other imports that might
@@ -16,7 +22,7 @@ sys.modules['sqlite3'] = sys.modules['pysqlite3']
 import uuid
 import os
 import logging
-import sys
+# sys is imported above for the sqlite3 patch
 import google.generativeai as genai
 
 # --- Flask and related imports ---
@@ -26,18 +32,18 @@ from flask_cors import CORS
 # --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-# Corrected imports for handling diverse document types
-from langchain_community.document_loaders import DirectoryLoader
-from langchain_community.document_loaders import UnstructuredFileLoader # This is the loader class for individual unstructured files
+from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains import create_history_aware_retriever
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_retrieval_chain
 from langchain_core.messages import HumanMessage, AIMessage
+# from langchain_core.chat_history import BaseChatMessageHistory # REMOVED
+# from langchain_core.chat_history import ChatMessageHistory # REMOVED
+
 
 # --- Application Configuration ---
 import config
@@ -52,11 +58,18 @@ llm = None
 retriever = None
 qa_chain_configs = {}
 
+# --- Flask App Instance (moved for logical flow, can be kept where it was too) ---
+app = Flask(__name__)
+CORS(app)
+
 # --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
+    """
+    Checks and logs available Gemini models if GOOGLE_API_KEY is set.
+    """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        logger.error("GOOGLE_API_KEY environment variable is not set. Please set it to proceed for Gemini model.")
+        logger.error("GOOGLE_API_KEY environment variable is not set. Please set it to proceed for Gemini model features.")
         return []
 
     genai.configure(api_key=api_key)
@@ -74,30 +87,34 @@ def check_gemini_models():
     return available_models
 
 # --- Function to initialize the RAG components ---
-def initialize_rag_components(model_mode):
+def initialize_rag_components(model_mode: str):
+    """
+    Initializes the RAG pipeline components: document loader, text splitter,
+    embedding model, vector store (ChromaDB), and language model.
+
+    Args:
+        model_mode (str): The mode for the language model ('local' for Ollama, 'cloud' for Gemini).
+    """
     global llm, retriever
 
     # --- 1. Load Documents from Various Types ---
     logger.info(f"Loading documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via UnstructuredFileLoader)")
     try:
-        # Use DirectoryLoader with UnstructuredFileLoader as the class for each file
-        # This is the recommended way in newer LangChain versions to use unstructured on directories.
         loader = DirectoryLoader(
             config.DOCUMENT_STORAGE_DIRECTORY,
             loader_cls=UnstructuredFileLoader, # Specify UnstructuredFileLoader for each document
             recursive=True,
             show_progress=True,
-            # You can also use loader_kwargs for specific UnstructuredFileLoader settings, e.g.:
-            # loader_kwargs={"mode": "elements", "strategy": "hi_res"}
+            # loader_kwargs={"mode": "elements", "strategy": "hi_res"} # Example: Unstructured specific args
         )
         documents = loader.load()
         logger.info(f"Loaded {len(documents)} document(s) of various types.")
     except Exception as e:
-        logger.exception(f"Detailed error during document loading: {e}") # ADDED/MODIFIED LINE FOR DETAILED ERROR
+        logger.exception(f"Detailed error during document loading: {e}")
         logger.error(f"Error loading documents: {e}")
         logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
         logger.error("Also, check file permissions for the directory and that unstructured dependencies are installed.")
-        exit()
+        sys.exit(1) # Use sys.exit(1) for clean exit on critical error
 
     # --- 2. Split Documents into Chunks ---
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -142,18 +159,25 @@ def initialize_rag_components(model_mode):
     
     logger.info("\nRAG components initialized.")
 
-# --- Flask App Setup ---
-app = Flask(__name__)
-CORS(app)
 
 # --- Route for the Web UI (e.g., for local testing and debugging) ---
 @app.route('/')
 def index():
+    """Renders the main index page for the web UI."""
     return render_template('index.html')
+
+# --- Store for chat histories (moved outside function for persistence across requests) ---
+# In a real app, this would be a database. For this example, in-memory is fine.
+qa_chain_configs = {} # Keep this as your main storage for session chains/memories
+
 
 # --- API Endpoint for Chat (for external systems / programmatic access) ---
 @app.route('/api/bot', methods=['POST'])
 def api_bot():
+    """
+    Handles chat requests, processes questions, and returns answers using the RAG chain.
+    Manages conversation history using session IDs.
+    """
     if not request.is_json:
         logger.warning("Received non-JSON request to /api/bot")
         return jsonify({"error": "Request must be JSON"}), 400
@@ -172,10 +196,13 @@ def api_bot():
     else:
         logger.info(f"Processing for session: {session_id}")
 
+    # The LangChain chain setup part
     if session_id not in qa_chain_configs:
         logger.info(f"Setting up new chain and memory for session {session_id}")
         
+        # Reverting to the original ConversationBufferMemory initialization
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
 
         history_aware_retriever_prompt = ChatPromptTemplate.from_messages([
             ("system", "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language."),
@@ -198,14 +225,14 @@ Context: {context}"""),
             ("user", "{input}"),
         ])
         
-        Youtube_chain = create_stuff_documents_chain(llm, qa_prompt)
+        Youtube_document_chain = create_stuff_documents_chain(llm, qa_prompt)
 
-        session_qa_chain = create_retrieval_chain(history_aware_retriever, Youtube_chain)
+        session_qa_chain = create_retrieval_chain(history_aware_retriever, Youtube_document_chain)
         
         qa_chain_configs[session_id] = {"chain": session_qa_chain, "memory": memory}
     else:
         session_qa_chain = qa_chain_configs[session_id]["chain"]
-        memory = qa_chain_configs[session_id]["memory"]
+        memory = qa_chain_configs[session_id]["memory"] # Ensure memory is correctly retrieved for existing sessions
 
     try:
         chat_history_messages = memory.load_memory_variables({})["chat_history"]
@@ -224,6 +251,7 @@ Context: {context}"""),
 # --- Health Check Endpoint (Optional but Recommended) ---
 @app.route('/health', methods=['GET'])
 def health_check():
+    """Provides a simple health check endpoint for the Flask application."""
     logger.info("Health check requested.")
     return jsonify({"status": "healthy", "message": "Document Assistant is running"}), 200
 
