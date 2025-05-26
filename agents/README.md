@@ -268,6 +268,8 @@ If you need to access the container's shell to debug or inspect files (e.g., to 
 
 Bash
 
+docker run --name ai-agent-doc --rm -it -p 3010:3010 -v "./data:/app/data" -e GOOGLE_API_KEY="%GOOGLE_API_KEY%" --entrypoint /bin/bash venkat5ai/ai-agent-doc:latest
+
 docker exec -it ai-agent-doc sh
 You can then cd /app/chroma_db and ls -la to see the generated files.
 
