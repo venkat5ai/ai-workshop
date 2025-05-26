@@ -13,8 +13,16 @@ DOCUMENT_STORAGE_DIRECTORY = os.getenv("DOCUMENT_STORAGE_DIRECTORY", "/app/data"
 
 # This is the directory INSIDE the container where ChromaDB will be stored.
 # This should ALSO be volume-mounted if you want the ChromaDB to persist on the host.
-CHROMA_DB_DIRECTORY = os.getenv("CHROMA_DB_DIRECTORY", "/app/chroma_db") # Set to absolute path inside container for consistency
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents_collection")
+CHROMA_DB_DIRECTORY = os.getenv("CHROMA_DB_DIRECTORY", "/app/chroma_db")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents_collection")
+
+# --- API Tool Configuration ---
+# Store API base URLs and API keys here for easy management
+# For OpenWeatherMap:
+# API Key should be set as an environment variable (OPENWEATHER_API_KEY)
+# Base URL for current weather by zip code (using 'zip' for zip code in API call)
+# Example URL for Current Weather Data: https://api.openweathermap.org/data/2.5/weather?zip={zip code},{country code}&appid={API key}
+OPENWEATHER_BASE_URL = os.getenv("OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/weather")
 
 # Google Gemini LLM Configuration
 # GOOGLE_API_KEY is expected to be set as an environment variable directly

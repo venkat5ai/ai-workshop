@@ -22,7 +22,8 @@ sys.modules['sqlite3'] = sys.modules['pysqlite3']
 import uuid
 import os
 import logging
-# sys is imported above for the sqlite3 patch
+import json
+import requests
 import google.generativeai as genai
 
 # --- Flask and related imports ---
@@ -41,8 +42,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
-# from langchain_core.chat_history import BaseChatMessageHistory # REMOVED
-# from langchain_core.chat_history import ChatMessageHistory # REMOVED
+
+# NEW: Imports for LangChain Agents and Tools
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.tools import Tool
 
 
 # --- Application Configuration ---
@@ -56,11 +59,126 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-qa_chain_configs = {}
+# This dictionary will store AgentExecutor instances, keyed by session_id.
+# Each AgentExecutor will manage its own memory.
+agent_executors = {} 
 
-# --- Flask App Instance (moved for logical flow, can be kept where it was too) ---
+# --- Flask App Instance ---
 app = Flask(__name__)
 CORS(app)
+
+# --- Tool Definitions ---
+def get_current_weather(location: str) -> str:
+    """
+    Fetches current weather data for a given location (zip code, city, city,state, or city,country)
+    using OpenWeatherMap.
+
+    Args:
+        location (str): The location string (e.g., "28227", "London", "Ashburn, VA", "Paris, FR").
+
+    Returns:
+        str: A summarized string of the weather data, or an informative error message.
+    """
+    api_key = os.getenv("OPENWEATHER_API_KEY")
+    if not api_key:
+        logger.error("OPENWEATHER_API_KEY environment variable is not set for weather tool.")
+        return "Weather API key not configured."
+
+    base_url = config.OPENWEATHER_BASE_URL
+    params = {
+        "appid": api_key,
+        "units": "imperial" # or "metric" for Celsius
+    }
+
+    # Attempt to parse location more robustly and try multiple formats if needed
+    # Prioritize precise formats first, then fall back to less precise.
+    location_attempts = []
+    original_parts = [p.strip() for p in location.split(',')]
+
+    # Attempt 1: Exact input as provided
+    if location:
+        if location.isdigit() and len(location) == 5:
+            location_attempts.append({"zip": f"{location},us"})
+        else:
+            location_attempts.append({"q": location})
+    
+    # Attempt 2: If input is "City, State_Code", try parsing as "City,State_Code" and then "City"
+    if len(original_parts) == 2:
+        city, state_or_country = original_parts
+        location_attempts.append({"q": f"{city},{state_or_country}"})
+        location_attempts.append({"q": city}) # Also try just the city
+    
+    # Attempt 3: If input is just a city name, ensure it's in the list
+    if len(original_parts) == 1 and not (original_parts[0].isdigit() and len(original_parts[0]) == 5):
+        if {"q": original_parts[0]} not in location_attempts:
+            location_attempts.append({"q": original_parts[0]})
+
+
+    # Remove duplicates from attempts (e.g., if "London" was added twice)
+    seen = set()
+    unique_attempts = []
+    for d in location_attempts:
+        t = tuple(sorted(d.items()))
+        if t not in seen:
+            unique_attempts.append(d)
+            seen.add(t)
+
+    # Specific workaround for known tricky locations if LLM still passes them
+    lower_location = location.lower()
+    if "ashburn" in lower_location and "nc" in lower_location:
+        # If the LLM insists on Ashburn, NC, let's explicitly try Ashburn, VA as a common correction
+        if {"q": "Ashburn,VA"} not in unique_attempts:
+            unique_attempts.insert(0, {"q": "Ashburn,VA"}) # Try VA first for Ashburn issues
+
+    final_attempts = unique_attempts
+    
+    for attempt_params in final_attempts:
+        current_params = {**params, **attempt_params} # Combine base params with attempt-specific params
+        query_identifier = attempt_params.get("q") or attempt_params.get("zip")
+        logger.info(f"Attempting weather API call for: {query_identifier} (Original: {location})")
+
+        try:
+            response = requests.get(base_url, params=current_params)
+            response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+            weather_data = response.json()
+            
+            if weather_data.get("main") and weather_data.get("weather"):
+                main_info = weather_data["main"]
+                weather_desc = weather_data["weather"][0]["description"]
+                city_name = weather_data.get("name", query_identifier.split(',')[0]) # Use name from response, fallback to part of query
+                
+                summary = (
+                    f"Current weather in {city_name}: "
+                    f"{main_info.get('temp')}°F, feels like {main_info.get('feels_like')}°F. "
+                    f"Conditions: {weather_desc}. Humidity: {main_info.get('humidity')}%. "
+                    f"Wind speed: {weather_data.get('wind', {}).get('speed')} mph."
+                )
+                logger.info(f"Successfully retrieved weather for '{query_identifier}'.")
+                return summary # Return immediately on success
+            else:
+                logger.warning(f"Incomplete weather data for '{query_identifier}'. Trying next option if available.")
+                continue # Try next attempt if data is incomplete
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"API call failed for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on API error
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON decoding failed for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on JSON error
+        except Exception as e:
+            logger.error(f"Unexpected error in get_current_weather for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on unexpected error
+
+    # If all attempts fail, return a consolidated and actionable error message for the LLM
+    return f"I couldn't retrieve weather data for '{location}' after several attempts. This could be due to an invalid location, incorrect spelling, or the location being too ambiguous. Please try again with a more precise location, like a zip code (e.g., '90210') or a city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
+
+# Define the weather tool (this can be global as it doesn't need session-specific state)
+weather_tool = Tool(
+    name="get_current_weather",
+    func=get_current_weather,
+    description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
+)
+
 
 # --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
@@ -102,10 +220,9 @@ def initialize_rag_components(model_mode: str):
     try:
         loader = DirectoryLoader(
             config.DOCUMENT_STORAGE_DIRECTORY,
-            loader_cls=UnstructuredFileLoader, # Specify UnstructuredFileLoader for each document
+            loader_cls=UnstructuredFileLoader,
             recursive=True,
             show_progress=True,
-            # loader_kwargs={"mode": "elements", "strategy": "hi_res"} # Example: Unstructured specific args
         )
         documents = loader.load()
         logger.info(f"Loaded {len(documents)} document(s) of various types.")
@@ -114,7 +231,7 @@ def initialize_rag_components(model_mode: str):
         logger.error(f"Error loading documents: {e}")
         logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
         logger.error("Also, check file permissions for the directory and that unstructured dependencies are installed.")
-        sys.exit(1) # Use sys.exit(1) for clean exit on critical error
+        sys.exit(1)
 
     # --- 2. Split Documents into Chunks ---
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -148,7 +265,9 @@ def initialize_rag_components(model_mode: str):
             logger.error("GOOGLE_API_KEY environment variable is not set. Cannot use Gemini model.")
             sys.exit(1)
         genai.configure(api_key=api_key)
-        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
+        # Using a slightly higher temperature (e.g., 0.2) can sometimes help with agent reasoning
+        # and natural language generation, reducing InternalServerErrors.
+        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE, temperature=0.2) 
         logger.info(f"Using Google Gemini cloud model: {config.GEMINI_MODEL_TO_USE}")
     else:
         logger.error(f"Invalid model mode: {model_mode}. Please use 'local' or 'cloud'.")
@@ -166,16 +285,12 @@ def index():
     """Renders the main index page for the web UI."""
     return render_template('index.html')
 
-# --- Store for chat histories (moved outside function for persistence across requests) ---
-# In a real app, this would be a database. For this example, in-memory is fine.
-qa_chain_configs = {} # Keep this as your main storage for session chains/memories
-
 
 # --- API Endpoint for Chat (for external systems / programmatic access) ---
 @app.route('/api/bot', methods=['POST'])
 def api_bot():
     """
-    Handles chat requests, processes questions, and returns answers using the RAG chain.
+    Handles chat requests, processes questions, and returns answers using the Agent Executor.
     Manages conversation history using session IDs.
     """
     if not request.is_json:
@@ -196,28 +311,25 @@ def api_bot():
     else:
         logger.info(f"Processing for session: {session_id}")
 
-    # The LangChain chain setup part
-    if session_id not in qa_chain_configs:
-        logger.info(f"Setting up new chain and memory for session {session_id}")
+    # Check if an AgentExecutor is already set up for this session
+    if session_id not in agent_executors:
+        logger.info(f"Setting up new agent for session {session_id}")
         
-        # Reverting to the original ConversationBufferMemory initialization
+        # 1. Create a new ConversationBufferMemory for the session
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-
+        
+        # 2. Create the RAG chain for document retrieval
         history_aware_retriever_prompt = ChatPromptTemplate.from_messages([
             ("system", "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language."),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
             ("user", "Standalone question:"),
         ])
+        retrieval_chain = create_history_aware_retriever(llm, retriever, history_aware_retriever_prompt)
         
-        history_aware_retriever = create_history_aware_retriever(
-            llm, retriever, history_aware_retriever_prompt
-        )
-
-        qa_prompt = ChatPromptTemplate.from_messages([
+        document_qa_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a diligent and accurate Document Assistant. Provide information clearly and directly.
-Based on the chat history and the provided context documents (if relevant), or your general knowledge (if context is not relevant), answer the user's question. Provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
+Based on the chat history and the provided context documents, answer the user's question. If the question is outside the context, use your general knowledge.
 If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
 
 Context: {context}"""),
@@ -225,21 +337,97 @@ Context: {context}"""),
             ("user", "{input}"),
         ])
         
-        Youtube_document_chain = create_stuff_documents_chain(llm, qa_prompt)
-
-        session_qa_chain = create_retrieval_chain(history_aware_retriever, Youtube_document_chain)
+        document_qa_chain = create_stuff_documents_chain(llm, document_qa_prompt)
         
-        qa_chain_configs[session_id] = {"chain": session_qa_chain, "memory": memory}
+        # This is the RAG chain for answering questions based on documents
+        rag_chain = create_retrieval_chain(retrieval_chain, document_qa_chain)
+
+        # Helper function for the document_qa_retriever tool's 'func'
+        # This function needs to access the session's memory
+        def _run_document_qa_retriever_tool_for_session(query: str) -> str:
+            """
+            Runs the RAG chain with the given query and the current session's chat history.
+            This function is used as the 'func' for the document_qa_retriever tool.
+            It captures the `memory` object from the enclosing scope.
+            """
+            # Access the memory object for the current session.
+            # This is safe because this function is defined within the scope where `memory` is available.
+            
+            # The agent typically passes just the question string.
+            # We need to construct the dictionary expected by rag_chain.invoke.
+            input_dict = {"input": query, "chat_history": memory.load_memory_variables({})["chat_history"]}
+            
+            try:
+                result = rag_chain.invoke(input_dict)
+                return result.get('answer', 'No answer found from documents.')
+            except Exception as e:
+                logger.error(f"Error in document_qa_retriever tool for query '{query}': {e}")
+                return f"Error retrieving document answer: {e}"
+
+        # 3. Define the tools the agent can use
+        tools = [
+            weather_tool, # Our new weather tool (globally defined)
+            # Wrap the RAG chain using the helper function
+            Tool(
+                name="document_qa_retriever",
+                func=_run_document_qa_retriever_tool_for_session, # Use the dynamic helper function
+                description="Useful for answering questions about the uploaded documents. Input should be the user's question, ideally rephrased if it's a follow-up."
+            ),
+        ]
+        
+        # 4. Create the Agent
+        # --- MODIFIED AGENT PROMPT ---
+        agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
+            
+            **Tool Usage Priority:**
+            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your documents.
+            - **Weather Information:** Use `get_current_weather` for real-time weather.
+                - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
+            
+            **General Knowledge Fallback:**
+            - If a question **cannot be answered by any of your tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?", general facts), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.
+            
+            **Response Style:**
+            - Always provide a direct and factual answer.
+            - Think step-by-step in your `agent_scratchpad` to determine the best approach (which tool to use, how to clarify, or when to use general knowledge)."""),
+            ("placeholder", "{chat_history}"),
+            ("user", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ])
+
+        agent = create_tool_calling_agent(llm, tools, agent_prompt)
+        
+        # 5. Create the Agent Executor
+        # Pass the memory directly to the AgentExecutor.
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True,
+            memory=memory # Pass the ConversationBufferMemory instance directly
+        )
+        
+        # Store the AgentExecutor for the session
+        agent_executors[session_id] = agent_executor
+        
     else:
-        session_qa_chain = qa_chain_configs[session_id]["chain"]
-        memory = qa_chain_configs[session_id]["memory"] # Ensure memory is correctly retrieved for existing sessions
+        # Retrieve the AgentExecutor for an existing session
+        agent_executor = agent_executors[session_id]
+        # Memory is managed by the AgentExecutor, no explicit retrieval needed here.
 
     try:
-        chat_history_messages = memory.load_memory_variables({})["chat_history"]
-        invoke_input = {"input": question, "chat_history": chat_history_messages}
-        result = session_qa_chain.invoke(invoke_input)
-        answer = result.get('answer', 'No answer found.')
-        memory.save_context({"input": question}, {"output": answer})
+        # The AgentExecutor's `invoke` method automatically uses its associated `memory`
+        # if initialized with it.
+        result = agent_executor.invoke({"input": question})
+        
+        answer = result.get('output', 'No answer found.')
+
+        # AgentExecutor's memory will handle saving context if initialized with it.
+        # This manual save_context might be redundant if memory is working perfectly
+        # with AgentExecutor, but doesn't hurt. Keeping for explicit control.
+        # Access memory from the executor itself:
+        # agent_executor.memory.save_context({"input": question}, {"output": answer})
 
 
         logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")

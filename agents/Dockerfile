@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download NLTK data required by unstructured
 # Downloads to /root/nltk_data by default in this environment.

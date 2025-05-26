@@ -2,7 +2,7 @@ Flask==3.1.1
 Flask-CORS==6.0.0
 langchain==0.3.25
 langchain_community==0.3.24
-langchain_google_genai # Let pip resolve, as it's working now
+langchain_google_genai
 langchain-huggingface==0.2.0
 langchain-chroma==0.2.4
 chromadb==1.0.10
@@ -15,6 +15,7 @@ unstructured[pdf,docx,csv,xlsx,pptx]==0.14.7
 python-magic==0.4.27
 python-docx>=1.1.2
 openpyxl==3.1.2
-google-generativeai # Let pip resolve, as it's working now
+google-generativeai
 pysqlite3-binary
 pdfminer.six==20221105
+requests
