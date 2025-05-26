@@ -84,66 +84,99 @@ def get_current_weather(location: str) -> str:
         logger.error("OPENWEATHER_API_KEY environment variable is not set for weather tool.")
         return "Weather API key not configured."
 
+    base_url = config.OPENWEATHER_BASE_URL
     params = {
         "appid": api_key,
         "units": "imperial" # or "metric" for Celsius
     }
 
-    # Attempt to parse location more robustly
-    parts = [p.strip() for p in location.split(',')]
+    # Attempt to parse location more robustly and try multiple formats if needed
+    # Prioritize precise formats first, then fall back to less precise.
+    location_attempts = []
+    original_parts = [p.strip() for p in location.split(',')]
+
+    # Attempt 1: Exact input as provided
+    if location:
+        if location.isdigit() and len(location) == 5:
+            location_attempts.append({"zip": f"{location},us"})
+        else:
+            location_attempts.append({"q": location})
     
-    # Try to infer location based on common patterns
-    if len(parts) == 1:
-        if parts[0].isdigit() and len(parts[0]) == 5:
-            params["zip"] = f"{parts[0]},us" # Assume US for 5-digit zip
-        else:
-            params["q"] = parts[0] # Assume it's a city name
-    elif len(parts) == 2:
-        params["q"] = f"{parts[0]},{parts[1]}" # Assume city, state/country code
-    elif len(parts) >= 3:
-        params["q"] = f"{parts[0]},{parts[1]},{parts[2]}" # Assume city, state, country
-    else:
-        return f"Invalid location format: '{location}'. Please provide a city, zip code, or city,state/country."
+    # Attempt 2: If input is "City, State_Code", try parsing as "City,State_Code" and then "City"
+    if len(original_parts) == 2:
+        city, state_or_country = original_parts
+        location_attempts.append({"q": f"{city},{state_or_country}"})
+        location_attempts.append({"q": city}) # Also try just the city
+    
+    # Attempt 3: If input is just a city name, ensure it's in the list
+    if len(original_parts) == 1 and not (original_parts[0].isdigit() and len(original_parts[0]) == 5):
+        if {"q": original_parts[0]} not in location_attempts:
+            location_attempts.append({"q": original_parts[0]})
 
-    try:
-        response = requests.get(config.OPENWEATHER_BASE_URL, params=params)
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-        weather_data = response.json()
-        
-        if weather_data.get("main") and weather_data.get("weather"):
-            main_info = weather_data["main"]
-            weather_desc = weather_data["weather"][0]["description"]
-            city_name = weather_data.get("name", weather_data.get("name", location)) # Use city name from response, fallback to original location
+
+    # Remove duplicates from attempts (e.g., if "London" was added twice)
+    seen = set()
+    unique_attempts = []
+    for d in location_attempts:
+        t = tuple(sorted(d.items()))
+        if t not in seen:
+            unique_attempts.append(d)
+            seen.add(t)
+
+    # Specific workaround for known tricky locations if LLM still passes them
+    lower_location = location.lower()
+    if "ashburn" in lower_location and "nc" in lower_location:
+        # If the LLM insists on Ashburn, NC, let's explicitly try Ashburn, VA as a common correction
+        if {"q": "Ashburn,VA"} not in unique_attempts:
+            unique_attempts.insert(0, {"q": "Ashburn,VA"}) # Try VA first for Ashburn issues
+
+    final_attempts = unique_attempts
+    
+    for attempt_params in final_attempts:
+        current_params = {**params, **attempt_params} # Combine base params with attempt-specific params
+        query_identifier = attempt_params.get("q") or attempt_params.get("zip")
+        logger.info(f"Attempting weather API call for: {query_identifier} (Original: {location})")
+
+        try:
+            response = requests.get(base_url, params=current_params)
+            response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+            weather_data = response.json()
             
-            # --- IMPORTANT: SUMMARIZE TOOL OUTPUT FOR LLM ---
-            # This is the key change to reduce LLM burden and prevent InternalServerError
-            summary = (
-                f"Current weather in {city_name}: "
-                f"{main_info.get('temp')}°F, feels like {main_info.get('feels_like')}°F. "
-                f"Conditions: {weather_desc}. Humidity: {main_info.get('humidity')}%. "
-                f"Wind speed: {weather_data.get('wind', {}).get('speed')} mph."
-            )
-            return summary
-        else:
-            return f"Could not retrieve full weather data for '{location}'. API response was incomplete."
+            if weather_data.get("main") and weather_data.get("weather"):
+                main_info = weather_data["main"]
+                weather_desc = weather_data["weather"][0]["description"]
+                city_name = weather_data.get("name", query_identifier.split(',')[0]) # Use name from response, fallback to part of query
+                
+                summary = (
+                    f"Current weather in {city_name}: "
+                    f"{main_info.get('temp')}°F, feels like {main_info.get('feels_like')}°F. "
+                    f"Conditions: {weather_desc}. Humidity: {main_info.get('humidity')}%. "
+                    f"Wind speed: {weather_data.get('wind', {}).get('speed')} mph."
+                )
+                logger.info(f"Successfully retrieved weather for '{query_identifier}'.")
+                return summary # Return immediately on success
+            else:
+                logger.warning(f"Incomplete weather data for '{query_identifier}'. Trying next option if available.")
+                continue # Try next attempt if data is incomplete
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API call to OpenWeatherMap for '{location}': {e}")
-        if "404 Client Error" in str(e):
-             return f"Weather data not found for the location '{location}'. Please ensure the location is valid and spelled correctly. If it's a city, try adding a state (e.g., 'Ashburn, VA') or country (e.g., 'Paris, FR')."
-        return f"Failed to retrieve weather data due to API error: {e}. Check network connection or API key."
-    except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON from OpenWeatherMap response for '{location}': {e}")
-        return f"Failed to parse weather data response from API."
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in get_current_weather for '{location}': {e}")
-        return "An unexpected error occurred while fetching weather data."
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"API call failed for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on API error
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON decoding failed for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on JSON error
+        except Exception as e:
+            logger.error(f"Unexpected error in get_current_weather for '{query_identifier}': {e}. Trying next option if available.")
+            continue # Try next attempt on unexpected error
+
+    # If all attempts fail, return a consolidated and actionable error message for the LLM
+    return f"I couldn't retrieve weather data for '{location}' after several attempts. This could be due to an invalid location, incorrect spelling, or the location being too ambiguous. Please try again with a more precise location, like a zip code (e.g., '90210') or a city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
 
 # Define the weather tool (this can be global as it doesn't need session-specific state)
 weather_tool = Tool(
     name="get_current_weather",
     func=get_current_weather,
-    description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
+    description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
 )
 
 
@@ -347,14 +380,17 @@ Context: {context}"""),
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
             
-            **Prioritize tool usage when appropriate:**
-            - **Document Questions:** Use `document_qa_retriever` to find answers in the uploaded documents.
-            - **Weather Questions:** Use `get_current_weather` for current weather conditions.
-                - **Important:** If the location is vague (e.g., "Ashburn") or appears incorrect (e.g., "Ashburn NC"), try to infer the most likely precise location (e.g., "Ashburn, VA" if common) or, if unsure, **ask the user for clarification (e.g., "Which Ashburn are you referring to?")** before calling the tool. Provide the most precise location possible to the tool (e.g., "London", "90210", "Ashburn, VA", "Paris, FR").
+            **Tool Usage Priority:**
+            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your documents.
+            - **Weather Information:** Use `get_current_weather` for real-time weather.
+                - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
             
-            **For general knowledge questions that do not require tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?"), use your inherent knowledge to provide a concise and relevant answer. Do not apologize for not using a tool if you can answer directly.
+            **General Knowledge Fallback:**
+            - If a question **cannot be answered by any of your tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?", general facts), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.
             
-            Always provide a direct answer. Think step-by-step to determine the best approach (tool or general knowledge)."""),
+            **Response Style:**
+            - Always provide a direct and factual answer.
+            - Think step-by-step in your `agent_scratchpad` to determine the best approach (which tool to use, how to clarify, or when to use general knowledge)."""),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
