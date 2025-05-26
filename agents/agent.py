@@ -113,9 +113,10 @@ def get_current_weather(location: str) -> str:
         if weather_data.get("main") and weather_data.get("weather"):
             main_info = weather_data["main"]
             weather_desc = weather_data["weather"][0]["description"]
-            city_name = weather_data.get("name", location)
+            city_name = weather_data.get("name", weather_data.get("name", location)) # Use city name from response, fallback to original location
             
             # --- IMPORTANT: SUMMARIZE TOOL OUTPUT FOR LLM ---
+            # This is the key change to reduce LLM burden and prevent InternalServerError
             summary = (
                 f"Current weather in {city_name}: "
                 f"{main_info.get('temp')}°F, feels like {main_info.get('feels_like')}°F. "
