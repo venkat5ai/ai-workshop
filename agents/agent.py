@@ -22,7 +22,8 @@ sys.modules['sqlite3'] = sys.modules['pysqlite3']
 import uuid
 import os
 import logging
-# sys is imported above for the sqlite3 patch
+import json
+import requests
 import google.generativeai as genai
 
 # --- Flask and related imports ---
@@ -42,6 +43,10 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
 
+# NEW: Imports for LangChain Agents and Tools
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.tools import Tool
+
 
 # --- Application Configuration ---
 import config
@@ -54,11 +59,80 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-qa_chain_configs = {}
+# This dictionary will store AgentExecutor instances, keyed by session_id.
+# Each AgentExecutor will manage its own memory.
+agent_executors = {} 
 
-# --- Flask App Instance (moved for logical flow, can be kept where it was too) ---
+# --- Flask App Instance ---
 app = Flask(__name__)
 CORS(app)
+
+# --- Tool Definitions ---
+def get_current_weather(location: str) -> str:
+    """
+    Fetches current weather data for a given location (zip code or city name)
+    using OpenWeatherMap. Defaults to US for zip codes.
+
+    Args:
+        location (str): The zip code (e.g., "28227") or city name (e.g., "London").
+                        For zip codes, assume US country code for now.
+
+    Returns:
+        str: A JSON string of the weather data summary, or an error message.
+    """
+    api_key = os.getenv("OPENWEATHER_API_KEY")
+    if not api_key:
+        logger.error("OPENWEATHER_API_KEY environment variable is not set for weather tool.")
+        return "Weather API key not configured."
+
+    params = {
+        "appid": api_key,
+        "units": "imperial" # or "metric" for Celsius
+    }
+    if location.isdigit() and len(location) == 5: # Simple check for US zip code
+        params["zip"] = f"{location},us"
+    else: # Assume it's a city name
+        params["q"] = location
+    
+    try:
+        response = requests.get(config.OPENWEATHER_BASE_URL, params=params)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        weather_data = response.json()
+        
+        if weather_data.get("main") and weather_data.get("weather"):
+            main_info = weather_data["main"]
+            weather_desc = weather_data["weather"][0]["description"]
+            city_name = weather_data.get("name", location)
+            
+            summary = {
+                "location": city_name,
+                "temperature_f": main_info.get("temp"),
+                "feels_like_f": main_info.get("feels_like"),
+                "humidity_percent": main_info.get("humidity"),
+                "weather_description": weather_desc,
+                "wind_speed_mph": weather_data.get("wind", {}).get("speed")
+            }
+            return json.dumps(summary)
+        else:
+            return f"Could not parse weather data for {location}. Full response: {weather_data}"
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error making API call to OpenWeatherMap: {e}")
+        return f"Failed to retrieve weather data: {e}"
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decoding JSON from OpenWeatherMap response: {e}")
+        return f"Failed to parse weather data response."
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in get_current_weather: {e}")
+        return "An unexpected error occurred while fetching weather data."
+
+# Define the weather tool (this can be global as it doesn't need session-specific state)
+weather_tool = Tool(
+    name="get_current_weather",
+    func=get_current_weather,
+    description="Useful for fetching current weather conditions. Input should be a zip code (string) or city name (string), e.g., '90210' or 'London'."
+)
+
 
 # --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
@@ -100,10 +174,9 @@ def initialize_rag_components(model_mode: str):
     try:
         loader = DirectoryLoader(
             config.DOCUMENT_STORAGE_DIRECTORY,
-            loader_cls=UnstructuredFileLoader, # Specify UnstructuredFileLoader for each document
+            loader_cls=UnstructuredFileLoader,
             recursive=True,
             show_progress=True,
-            # loader_kwargs={"mode": "elements", "strategy": "hi_res"} # Example: Unstructured specific args
         )
         documents = loader.load()
         logger.info(f"Loaded {len(documents)} document(s) of various types.")
@@ -112,7 +185,7 @@ def initialize_rag_components(model_mode: str):
         logger.error(f"Error loading documents: {e}")
         logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
         logger.error("Also, check file permissions for the directory and that unstructured dependencies are installed.")
-        sys.exit(1) # Use sys.exit(1) for clean exit on critical error
+        sys.exit(1)
 
     # --- 2. Split Documents into Chunks ---
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -146,7 +219,7 @@ def initialize_rag_components(model_mode: str):
             logger.error("GOOGLE_API_KEY environment variable is not set. Cannot use Gemini model.")
             sys.exit(1)
         genai.configure(api_key=api_key)
-        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE)
+        llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE, temperature=0.0)
         logger.info(f"Using Google Gemini cloud model: {config.GEMINI_MODEL_TO_USE}")
     else:
         logger.error(f"Invalid model mode: {model_mode}. Please use 'local' or 'cloud'.")
@@ -164,16 +237,12 @@ def index():
     """Renders the main index page for the web UI."""
     return render_template('index.html')
 
-# --- Store for chat histories (moved outside function for persistence across requests) ---
-# In a real app, this would be a database. For this example, in-memory is fine.
-qa_chain_configs = {} # Keep this as your main storage for session chains/memories
-
 
 # --- API Endpoint for Chat (for external systems / programmatic access) ---
 @app.route('/api/bot', methods=['POST'])
 def api_bot():
     """
-    Handles chat requests, processes questions, and returns answers using the RAG chain.
+    Handles chat requests, processes questions, and returns answers using the Agent Executor.
     Manages conversation history using session IDs.
     """
     if not request.is_json:
@@ -194,28 +263,25 @@ def api_bot():
     else:
         logger.info(f"Processing for session: {session_id}")
 
-    # The LangChain chain setup part
-    if session_id not in qa_chain_configs:
-        logger.info(f"Setting up new chain and memory for session {session_id}")
+    # Check if an AgentExecutor is already set up for this session
+    if session_id not in agent_executors:
+        logger.info(f"Setting up new agent for session {session_id}")
         
-        # Reverting to the original ConversationBufferMemory initialization
+        # 1. Create a new ConversationBufferMemory for the session
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-
+        
+        # 2. Create the RAG chain for document retrieval
         history_aware_retriever_prompt = ChatPromptTemplate.from_messages([
             ("system", "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language."),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
             ("user", "Standalone question:"),
         ])
+        retrieval_chain = create_history_aware_retriever(llm, retriever, history_aware_retriever_prompt)
         
-        history_aware_retriever = create_history_aware_retriever(
-            llm, retriever, history_aware_retriever_prompt
-        )
-
-        qa_prompt = ChatPromptTemplate.from_messages([
+        document_qa_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a diligent and accurate Document Assistant. Provide information clearly and directly.
-Based on the chat history and the provided context documents (if relevant), or your general knowledge (if context is not relevant), answer the user's question. Provide a direct answer without explicitly stating whether the answer came from the provided documents or your general knowledge.
+Based on the chat history and the provided context documents, answer the user's question. If the question is outside the context, use your general knowledge.
 If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
 
 Context: {context}"""),
@@ -223,21 +289,84 @@ Context: {context}"""),
             ("user", "{input}"),
         ])
         
-        Youtube_document_chain = create_stuff_documents_chain(llm, qa_prompt)
-
-        session_qa_chain = create_retrieval_chain(history_aware_retriever, Youtube_document_chain)
+        document_qa_chain = create_stuff_documents_chain(llm, document_qa_prompt)
         
-        qa_chain_configs[session_id] = {"chain": session_qa_chain, "memory": memory}
+        # This is the RAG chain for answering questions based on documents
+        rag_chain = create_retrieval_chain(retrieval_chain, document_qa_chain)
+
+        # Helper function for the document_qa_retriever tool's 'func'
+        # This function needs to access the session's memory
+        def _run_document_qa_retriever_tool_for_session(query: str) -> str:
+            """
+            Runs the RAG chain with the given query and the current session's chat history.
+            This function is used as the 'func' for the document_qa_retriever tool.
+            It captures the `memory` object from the enclosing scope.
+            """
+            # Access the memory object for the current session.
+            # This is safe because this function is defined within the scope where `memory` is available.
+            
+            # The agent typically passes just the question string.
+            # We need to construct the dictionary expected by rag_chain.invoke.
+            input_dict = {"input": query, "chat_history": memory.load_memory_variables({})["chat_history"]}
+            
+            try:
+                result = rag_chain.invoke(input_dict)
+                return result.get('answer', 'No answer found from documents.')
+            except Exception as e:
+                logger.error(f"Error in document_qa_retriever tool for query '{query}': {e}")
+                return f"Error retrieving document answer: {e}"
+
+        # 3. Define the tools the agent can use
+        tools = [
+            weather_tool, # Our new weather tool (globally defined)
+            # Wrap the RAG chain using the helper function
+            Tool(
+                name="document_qa_retriever",
+                func=_run_document_qa_retriever_tool_for_session, # Use the dynamic helper function
+                description="Useful for answering questions about the uploaded documents. Input should be the user's question, ideally rephrased if it's a follow-up."
+            ),
+        ]
+        
+        # 4. Create the Agent
+        agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful AI assistant. Use the available tools to answer questions. If a question is about documents, use the 'document_qa_retriever'. If it's about current weather, use 'get_current_weather'. Always provide a direct answer. If you need to make a decision, think step-by-step."),
+            ("placeholder", "{chat_history}"),
+            ("user", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ])
+
+        agent = create_tool_calling_agent(llm, tools, agent_prompt)
+        
+        # 5. Create the Agent Executor
+        # Pass the memory directly to the AgentExecutor.
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True,
+            memory=memory # Pass the ConversationBufferMemory instance directly
+        )
+        
+        # Store the AgentExecutor for the session
+        agent_executors[session_id] = agent_executor
+        
     else:
-        session_qa_chain = qa_chain_configs[session_id]["chain"]
-        memory = qa_chain_configs[session_id]["memory"] # Ensure memory is correctly retrieved for existing sessions
+        # Retrieve the AgentExecutor for an existing session
+        agent_executor = agent_executors[session_id]
+        # Memory is managed by the AgentExecutor, no explicit retrieval needed here.
 
     try:
-        chat_history_messages = memory.load_memory_variables({})["chat_history"]
-        invoke_input = {"input": question, "chat_history": chat_history_messages}
-        result = session_qa_chain.invoke(invoke_input)
-        answer = result.get('answer', 'No answer found.')
-        memory.save_context({"input": question}, {"output": answer})
+        # The AgentExecutor's `invoke` method automatically uses its associated `memory`
+        # if initialized with it.
+        result = agent_executor.invoke({"input": question})
+        
+        answer = result.get('output', 'No answer found.')
+
+        # AgentExecutor's memory will handle saving context if initialized with it.
+        # This manual save_context might be redundant if memory is working perfectly
+        # with AgentExecutor, but doesn't hurt. Keeping for explicit control.
+        # Access memory from the executor itself:
+        # agent_executor.memory.save_context({"input": question}, {"output": answer})
 
 
         logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")
