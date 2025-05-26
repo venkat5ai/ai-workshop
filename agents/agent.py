@@ -130,7 +130,7 @@ def get_current_weather(location: str) -> str:
 weather_tool = Tool(
     name="get_current_weather",
     func=get_current_weather,
-    description="Useful for fetching current weather conditions. Input should be a zip code (string) or city name (string), e.g., '90210' or 'London'."
+    description="Useful for fetching current weather conditions. Input should be a zip code (string) or a precise city name (string), e.g., '90210' or 'London'. If the city name is ambiguous, you might need to specify a state or country for better accuracy."
 )
 
 
@@ -328,8 +328,18 @@ Context: {context}"""),
         ]
         
         # 4. Create the Agent
+        # --- MODIFIED AGENT PROMPT ---
         agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful AI assistant. Use the available tools to answer questions. If a question is about documents, use the 'document_qa_retriever'. If it's about current weather, use 'get_current_weather'. Always provide a direct answer. If you need to make a decision, think step-by-step."),
+            ("system", """You are a helpful and versatile AI assistant.
+            Your primary goal is to answer questions accurately and directly.
+
+            **Here are your guidelines:**
+            1. **Tool Usage:** If a question can be answered by using one of your tools (e.g., about documents or current weather), you MUST use the appropriate tool.
+            2. **Document Questions:** If the question is about the uploaded documents, use the `document_qa_retriever` tool.
+            3. **Weather Questions:** If the question is about current weather, use the `get_current_weather` tool. When asking for weather, if the location is vague or incomplete, try to infer a common location (e.g., "NYC" for New York City) or ask the user for clarification before calling the tool. Prioritize providing a precise location to the tool (e.g., "London" or "90210").
+            4. **General Knowledge:** If a question cannot be answered by any of your tools, use your general knowledge to provide a concise and relevant answer. Do not apologize for not having a tool if you can answer with general knowledge.
+            5. **Direct Answers:** Always provide a direct answer. Avoid conversational filler or unnecessary pleasantries.
+            6. **Thought Process:** Think step-by-step. Break down complex requests to determine the best approach (tool or general knowledge)."""),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
