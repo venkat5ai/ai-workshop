@@ -36,3 +36,10 @@ RETRIEVER_SEARCH_K = int(os.getenv("RETRIEVER_SEARCH_K", 3))
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper() # INFO, DEBUG, WARNING, ERROR, CRITICAL
+
+# Web Scraper User Agent (Optional: can be configured via environment variable)
+WEB_SCRAPER_USER_AGENT = os.getenv("WEB_SCRAPER_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+# Deep Scraping Configuration
+SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", 1.0)) # Delay between requests during deep scraping
+MAX_DOCUMENTS_TO_SCRAPE = int(os.getenv("MAX_DOCUMENTS_TO_SCRAPE", 10)) # Max number of web documents to scrape

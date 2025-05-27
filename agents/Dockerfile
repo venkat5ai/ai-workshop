@@ -23,6 +23,7 @@ RUN apt-get update && \
         libwebp-dev \
         tcl tk \
         libsqlite3-dev \
+    # Removed Playwright browser dependencies as they are no longer needed
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install for minimal layer size
 
@@ -37,6 +38,9 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Removed Playwright browser installation as it's no longer needed
+# RUN python -m playwright install --with-deps chromium
 
 # Download NLTK data required by unstructured
 # Downloads to /root/nltk_data by default in this environment.
@@ -65,6 +69,7 @@ RUN apt-get update && \
         liblcms2-dev \
         libwebp-dev \
         tcl tk \
+    # Removed Playwright runtime dependencies as they are no longer needed
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install
 
@@ -73,12 +78,13 @@ WORKDIR /app
 
 # Copy installed Python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-# Copy NLTK data from the builder stage to a more standard NLTK data path
+# Removed Playwright browser binaries copy as it's no longer needed
+# COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+# Copy NLTK data from the builder stage
 COPY --from=builder /root/nltk_data /usr/local/share/nltk_data/
 
 # Copy the entrypoint script and make it executable
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Copy your application code
 COPY . .
