@@ -407,3 +407,12 @@ User Authentication/Authorization: Add a login system to restrict access to the 
 Error Handling and Logging: More robust logging and error handling for production environments.
 Advanced RAG Techniques: Explore more sophisticated retrieval methods (e.g., HyDE, Cohere Rerank) or multi-modal RAG.
 Deployment Automation: Scripts or configurations for automated deployment to cloud platforms (AWS, GCP, Azure).
+
+# Debugging and testing
+Testing with out docker builds each time: (volume mapped entire current dir to reflect changes in requirements.txt or any for pip installs)
+	in config.py (optional) change line with CHROMA_DB_DIRECTORY from /app/chroma_db to /var/tmp/chroma_db
+	docker run --name ai-agent-doc --rm -it -p 3010:3010 -v ".:/app" -e GOOGLE_API_KEY="%GOOGLE_API_KEY%" -e OPENWEATHER_API_KEY="%OPENWEATHER_API_KEY%" --entrypoint /bin/bash venkat5ai/ai-agent-doc:1.2
+	
+	from the bash terminal run - cd /app; python agent.py cloud # rm -rf /chroma_db each time before you run
+	
+	docker exec -it ai-agent-doc sh on another terminal if needed

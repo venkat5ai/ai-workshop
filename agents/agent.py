@@ -42,18 +42,24 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.documents import Document
 
 # Imports for LangChain Agents and Tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
+from abc import ABC, abstractmethod # <--- ADD THIS LINE
+
+# --- NEW: Imports for Reranking ---
+from sentence_transformers import CrossEncoder # For reranking
+from langchain.retrievers import ContextualCompressionRetriever
+# Removed: from langchain_community.document_compressors import BaseDocumentCompressor # No longer needed directly
+from abc import ABC, abstractmethod # <--- Ensure this is ADDED or present
 
 # --- NEW: Import ingestion utilities ---
 import ingestion_utils # Import the new file
 
 # --- Application Configuration ---
 import config
-# BeautifulSoup is now imported within ingestion_utils, so not needed here
-# from bs4 import BeautifulSoup 
 
 # --- Logging Setup ---
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL),
@@ -240,7 +246,7 @@ def initialize_rag_components(model_mode: str):
         sys.exit(1)
 
     # Load web documents from web.conf via deep scraping
-    # Set the ingestion config for user agent and scrape delay and max documents
+    # Set the ingestion config for user agent, scrape delay, and max documents
     ingestion_utils.set_ingestion_config(
         config.WEB_SCRAPER_USER_AGENT, 
         config.SCRAPE_DELAY_SECONDS, 
@@ -289,9 +295,58 @@ def initialize_rag_components(model_mode: str):
         logger.error(f"Invalid model mode: {model_mode}. Please use 'local' or 'cloud'.")
         sys.exit(1)
 
-    # --- 5. Create the Retriever ---
-    retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
+    # --- 5. Create the Retriever with Contextual Compression and Reranking ---
+    base_retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
     
+    # Initialize the reranker model
+    logger.info(f"Loading reranker model: {config.RERANKER_MODEL_NAME}...")
+    try:
+        reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
+        # Wrap the CrossEncoder in a custom compressor, inheriting from ABC
+        class CrossEncoderCompressor(ABC): # CHANGE THIS LINE (1/2)
+            def __init__(self, model: CrossEncoder, top_n: int = 3):
+                self.model = model
+                self.top_n = top_n
+                logger.info(f"CrossEncoderCompressor initialized with top_n={top_n}")
+
+            # Remove @abstractmethod here, as you are providing the concrete implementation
+            def _compress_documents(
+                self, documents: list[Document], query: str, callbacks=None
+            ) -> list[Document]:
+                if not documents:
+                    return []
+                
+                # Prepare passages for reranking
+                passages = [doc.page_content for doc in documents]
+                
+                # Generate scores
+                # The model expects a list of [query, passage] pairs
+                sentence_pairs = [[query, passage] for passage in passages]
+                scores = self.model.predict(sentence_pairs)
+                
+                # Sort documents based on scores in descending order
+                # Use a tuple for sorting (score, original_index) to maintain tie-breaking consistency
+                # and to easily map back to original documents
+                scored_documents = sorted(
+                    zip(scores, documents), key=lambda x: x[0], reverse=True
+                )
+                
+                # Select top N documents
+                compressed_documents = [doc for score, doc in scored_documents[:self.top_n]]
+                logger.debug(f"Reranked {len(documents)} documents to top {len(compressed_documents)} for query: '{query}'")
+                return compressed_documents
+        
+        compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
+        retriever = ContextualCompressionRetriever(
+            base_compressor=compressor, base_retriever=base_retriever
+        )
+        logger.info("ContextualCompressionRetriever with Reranker initialized.")
+
+    except Exception as e:
+        logger.error(f"Error loading or initializing reranker model '{config.RERANKER_MODEL_NAME}': {e}")
+        logger.error("Proceeding without reranking. Retrieval quality might be lower.")
+        retriever = base_retriever # Fallback to base retriever if reranker fails
+        
     logger.info("\nRAG components initialized.")
 
 
