@@ -43,10 +43,12 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
 
-# NEW: Imports for LangChain Agents and Tools
+# Imports for LangChain Agents and Tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
 
+# --- NEW: Import web scraping tools from web.py ---
+from web import static_web_scraper_tool, dynamic_web_browser_tool
 
 # --- Application Configuration ---
 import config
@@ -329,10 +331,10 @@ def api_bot():
         
         document_qa_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a diligent and accurate Document Assistant. Provide information clearly and directly.
-Based on the chat history and the provided context documents, answer the user's question. If the question is outside the context, use your general knowledge.
-If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
+            Based on the chat history and the provided context documents, answer the user's question. If the question is outside the context, use your general knowledge.
+            If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
 
-Context: {context}"""),
+            Context: {context}"""),
             ("placeholder", "{chat_history}"),
             ("user", "{input}"),
         ])
@@ -366,7 +368,9 @@ Context: {context}"""),
 
         # 3. Define the tools the agent can use
         tools = [
-            weather_tool, # Our new weather tool (globally defined)
+            weather_tool, # Our existing weather tool
+            static_web_scraper_tool, # NEW: Static web scraper tool
+            dynamic_web_browser_tool, # NEW: Dynamic web browser tool
             # Wrap the RAG chain using the helper function
             Tool(
                 name="document_qa_retriever",
@@ -384,6 +388,9 @@ Context: {context}"""),
             - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your documents.
             - **Weather Information:** Use `get_current_weather` for real-time weather.
                 - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
+            - **Web Scraping:**
+                - **Static Content:** For general information on blogs, news, or documentation, try `StaticWebScraper` first. It is faster and lighter.
+                - **Dynamic Content:** If `StaticWebScraper` fails, or if the website requires interaction (like clicking, scrolling, logging in) or loads content with JavaScript, use `DynamicWebBrowser`. Provide a clear 'task_description' for `DynamicWebBrowser` to guide its actions.
             
             **General Knowledge Fallback:**
             - If a question **cannot be answered by any of your tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?", general facts), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.

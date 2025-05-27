@@ -19,3 +19,5 @@ google-generativeai
 pysqlite3-binary
 pdfminer.six==20221105
 requests
+beautifulsoup4==4.12.3
+playwright==1.44.0

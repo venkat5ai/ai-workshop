@@ -23,6 +23,22 @@ RUN apt-get update && \
         libwebp-dev \
         tcl tk \
         libsqlite3-dev \
+    # Playwright browser dependencies (for Chromium)
+    # These are common dependencies for headless Chromium
+        fonts-liberation \
+        libnss3 \
+        libfontconfig1 \
+        libasound2 \
+        libatk1.0-0 \
+        libgtk-3-0 \
+        libgconf-2-4 \
+        libdbus-glib-1-2 \
+        libxcomposite1 \
+        libxi6 \
+        libxtst6 \
+        libgdk-pixbuf2.0-0 \
+        xdg-utils \
+        procps \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install for minimal layer size
 
@@ -37,6 +53,9 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright browsers (important step!)
+RUN python -m playwright install --with-deps chromium
 
 # Download NLTK data required by unstructured
 # Downloads to /root/nltk_data by default in this environment.
@@ -65,6 +84,21 @@ RUN apt-get update && \
         liblcms2-dev \
         libwebp-dev \
         tcl tk \
+    # Playwright runtime dependencies
+        fonts-liberation \
+        libnss3 \
+        libfontconfig1 \
+        libasound2 \
+        libatk1.0-0 \
+        libgtk-3-0 \
+        libgconf-2-4 \
+        libdbus-glib-1-2 \
+        libxcomposite1 \
+        libxi6 \
+        libxtst6 \
+        libgdk-pixbuf2.0-0 \
+        xdg-utils \
+        procps \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install
 
@@ -73,12 +107,13 @@ WORKDIR /app
 
 # Copy installed Python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-# Copy NLTK data from the builder stage to a more standard NLTK data path
+# Copy Playwright browser binaries
+COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+# Copy NLTK data from the builder stage
 COPY --from=builder /root/nltk_data /usr/local/share/nltk_data/
 
 # Copy the entrypoint script and make it executable
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Copy your application code
 COPY . .
