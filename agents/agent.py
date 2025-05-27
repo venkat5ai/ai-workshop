@@ -47,11 +47,13 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
 
-# --- NEW: Import web scraping tools from web.py ---
-from web import static_web_scraper_tool, dynamic_web_browser_tool
+# --- NEW: Import ingestion utilities ---
+import ingestion_utils # Import the new file
 
 # --- Application Configuration ---
 import config
+# BeautifulSoup is now imported within ingestion_utils, so not needed here
+# from bs4 import BeautifulSoup 
 
 # --- Logging Setup ---
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL),
@@ -61,8 +63,6 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-# This dictionary will store AgentExecutor instances, keyed by session_id.
-# Each AgentExecutor will manage its own memory.
 agent_executors = {} 
 
 # --- Flask App Instance ---
@@ -206,6 +206,7 @@ def check_gemini_models():
         logger.error("Please double-check your GOOGLE_API_KEY and internet connection if using Gemini.")
     return available_models
 
+
 # --- Function to initialize the RAG components ---
 def initialize_rag_components(model_mode: str):
     """
@@ -217,27 +218,42 @@ def initialize_rag_components(model_mode: str):
     """
     global llm, retriever
 
-    # --- 1. Load Documents from Various Types ---
-    logger.info(f"Loading documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via UnstructuredFileLoader)")
+    # --- 1. Load Documents from Various Types (Local files and Web) ---
+    all_documents = []
+
+    # Load local documents
+    logger.info(f"Loading local documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via UnstructuredFileLoader)")
     try:
-        loader = DirectoryLoader(
+        local_loader = DirectoryLoader(
             config.DOCUMENT_STORAGE_DIRECTORY,
             loader_cls=UnstructuredFileLoader,
             recursive=True,
             show_progress=True,
         )
-        documents = loader.load()
-        logger.info(f"Loaded {len(documents)} document(s) of various types.")
+        local_documents = local_loader.load()
+        all_documents.extend(local_documents)
+        logger.info(f"Loaded {len(local_documents)} local document(s).")
     except Exception as e:
-        logger.exception(f"Detailed error during document loading: {e}")
-        logger.error(f"Error loading documents: {e}")
+        logger.exception(f"Detailed error during local document loading: {e}")
+        logger.error(f"Error loading local documents: {e}")
         logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
-        logger.error("Also, check file permissions for the directory and that unstructured dependencies are installed.")
         sys.exit(1)
+
+    # Load web documents from web.conf via deep scraping
+    # Set the ingestion config for user agent and scrape delay and max documents
+    ingestion_utils.set_ingestion_config(
+        config.WEB_SCRAPER_USER_AGENT, 
+        config.SCRAPE_DELAY_SECONDS, 
+        config.MAX_DOCUMENTS_TO_SCRAPE
+    )
+    web_docs = ingestion_utils.load_web_documents_deep_scrape(config.DOCUMENT_STORAGE_DIRECTORY) # Pass the document storage directory for web.conf
+    all_documents.extend(web_docs)
+    logger.info(f"Loaded {len(web_docs)} web document(s) via deep scraping. Total documents for RAG: {len(all_documents)}")
+
 
     # --- 2. Split Documents into Chunks ---
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    texts = text_splitter.split_documents(documents)
+    texts = text_splitter.split_documents(all_documents)
     logger.info(f"Split documents into {len(texts)} chunks.")
 
     # --- 3. Create Embeddings and Store in ChromaDB ---
@@ -267,8 +283,6 @@ def initialize_rag_components(model_mode: str):
             logger.error("GOOGLE_API_KEY environment variable is not set. Cannot use Gemini model.")
             sys.exit(1)
         genai.configure(api_key=api_key)
-        # Using a slightly higher temperature (e.g., 0.2) can sometimes help with agent reasoning
-        # and natural language generation, reducing InternalServerErrors.
         llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_TO_USE, temperature=0.2) 
         logger.info(f"Using Google Gemini cloud model: {config.GEMINI_MODEL_TO_USE}")
     else:
@@ -369,13 +383,10 @@ def api_bot():
         # 3. Define the tools the agent can use
         tools = [
             weather_tool, # Our existing weather tool
-            static_web_scraper_tool, # NEW: Static web scraper tool
-            dynamic_web_browser_tool, # NEW: Dynamic web browser tool
-            # Wrap the RAG chain using the helper function
             Tool(
                 name="document_qa_retriever",
                 func=_run_document_qa_retriever_tool_for_session, # Use the dynamic helper function
-                description="Useful for answering questions about the uploaded documents. Input should be the user's question, ideally rephrased if it's a follow-up."
+                description="Useful for answering questions about the uploaded documents and pre-scraped web content. Input should be the user's question, ideally rephrased if it's a follow-up."
             ),
         ]
         
@@ -385,12 +396,9 @@ def api_bot():
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
             
             **Tool Usage Priority:**
-            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your documents.
+            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your uploaded documents AND the pre-scraped web content.
             - **Weather Information:** Use `get_current_weather` for real-time weather.
                 - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
-            - **Web Scraping:**
-                - **Static Content:** For general information on blogs, news, or documentation, try `StaticWebScraper` first. It is faster and lighter.
-                - **Dynamic Content:** If `StaticWebScraper` fails, or if the website requires interaction (like clicking, scrolling, logging in) or loads content with JavaScript, use `DynamicWebBrowser`. Provide a clear 'task_description' for `DynamicWebBrowser` to guide its actions.
             
             **General Knowledge Fallback:**
             - If a question **cannot be answered by any of your tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?", general facts), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.
@@ -430,12 +438,6 @@ def api_bot():
         
         answer = result.get('output', 'No answer found.')
 
-        # AgentExecutor's memory will handle saving context if initialized with it.
-        # This manual save_context might be redundant if memory is working perfectly
-        # with AgentExecutor, but doesn't hurt. Keeping for explicit control.
-        # Access memory from the executor itself:
-        # agent_executor.memory.save_context({"input": question}, {"output": answer})
-
 
         logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")
         return jsonify({"answer": answer, "session_id": session_id}), 200
@@ -461,6 +463,13 @@ if __name__ == '__main__':
         model_mode = "cloud"
         logger.info("No model mode provided. Defaulting to 'cloud' mode.")
 
+    # Set ingestion config before loading docs
+    ingestion_utils.set_ingestion_config(
+        config.WEB_SCRAPER_USER_AGENT, 
+        config.SCRAPE_DELAY_SECONDS,
+        config.MAX_DOCUMENTS_TO_SCRAPE # Pass the new configurable value
+    )
+    
     initialize_rag_components(model_mode)
     logger.info("RAG components ready for requests!")
 
