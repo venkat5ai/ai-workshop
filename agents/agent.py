@@ -25,6 +25,7 @@ import json
 import requests
 import google.generativeai as genai
 from werkzeug.utils import secure_filename # For secure file naming
+import time # For exponential backoff in Google Search Tool
 
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify, render_template
@@ -52,10 +53,13 @@ from langchain_core.documents import Document
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
 
+# --- NEW: Imports for Google Search Tool ---
+from langchain_google_community import GoogleSearchAPIWrapper
+
 # --- NEW: Imports for Reranking ---
 from sentence_transformers import CrossEncoder # For reranking
 from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors.base import BaseDocumentCompressor # <--- NEW IMPORT
+from langchain.retrievers.document_compressors.base import BaseDocumentCompressor
 
 # --- NEW: Import ingestion utilities ---
 import ingestion_utils # Import the new file
@@ -181,7 +185,7 @@ def get_current_weather(location: str) -> str:
             logger.warning(f"OpenWeatherMap API call failed for '{query_identifier}': {e}. Trying next option if available.")
             continue # Try next attempt on API error
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON decoding failed for '{query_identifier}' from OpenWeatherMap: {e}. Trying next option if available.")
+            logger.warning(f"JSON decoding failed for '{query_identifier}' from OpenWeatherMap: {e}. Trying next next option if available.")
             continue # Try next attempt on JSON error
         except Exception as e:
             logger.error(f"Unexpected error in get_current_weather tool for '{query_identifier}': {e}. Trying next option if available.")
@@ -199,6 +203,67 @@ weather_tool = Tool(
     name="get_current_weather",
     func=get_current_weather,
     description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
+)
+
+# --- NEW: Google Search Tool Definition ---
+# Initialize Google Search API Wrapper
+# It picks up GOOGLE_API_KEY and GOOGLE_CSE_ID from environment variables
+try:
+    Google_Search_wrapper = GoogleSearchAPIWrapper() # Corrected variable name
+    logger.info("GoogleSearchAPIWrapper initialized.")
+except Exception as e:
+    logger.error(f"Failed to initialize GoogleSearchAPIWrapper: {e}")
+    logger.error("Please ensure GOOGLE_API_KEY and GOOGLE_CSE_ID are set in your environment.")
+    Google_Search_wrapper = None # Set to None to prevent errors if not initialized
+
+def run_Google_Search(query: str) -> str:
+    """
+    Performs a Google search for the given query and returns a summary of the results.
+    Includes basic error handling and exponential backoff for rate limits.
+    """
+    if Google_Search_wrapper is None:
+        logger.error("Google Search tool is not initialized. Cannot perform search.")
+        return "Google Search tool is not available. Please check server configuration."
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Use search.results() to get structured data (title, snippet, link)
+            results = Google_Search_wrapper.results(query, config.Google_Search_TOP_K)
+            
+            if not results:
+                return "No relevant results found for the query."
+            
+            formatted_results = []
+            for i, res in enumerate(results):
+                # Format each result for clarity
+                formatted_results.append(
+                    f"Result {i+1}: "
+                    f"Title: {res.get('title', 'N/A')}\n"
+                    f"Snippet: {res.get('snippet', 'N/A')}\n"
+                    f"Link: {res.get('link', 'N/A')}"
+                )
+            
+            # Combine formatted results into a single string for the LLM
+            return "\n\n".join(formatted_results)
+            
+        except Exception as e:
+            # Check for API-specific errors, especially 429 (quota exceeded)
+            error_message = str(e)
+            if "429" in error_message or "Quota exceeded" in error_message:
+                logger.warning(f"Google Search API quota exceeded or rate limited (attempt {attempt+1}/{max_retries}). Retrying with backoff...")
+                time.sleep(2 ** attempt) # Exponential backoff
+            else:
+                logger.error(f"Error during Google Search (attempt {attempt+1}/{max_retries}) for query '{query}': {e}")
+                if attempt == max_retries - 1: # If last attempt failed
+                    return f"Failed to perform Google search due to an error: {e}. Please try again later."
+    return "Failed to perform Google search after multiple retries." # Should be caught by the last else
+
+
+Google_Search_tool = Tool(
+    name="Google_Search",
+    func=run_Google_Search,
+    description="Useful for general knowledge questions, current events, or anything that requires up-to-date information not found in the provided documents. Input should be a concise search query string."
 )
 
 # --- CrossEncoderCompressor Class (MOVED TO GLOBAL SCOPE AND NOW IMPLEMENTS abstract method) ---
@@ -602,6 +667,7 @@ def api_bot():
         # 3. Define the tools the agent can use
         tools = [
             weather_tool, # Our existing weather tool
+            Google_Search_tool, # Our NEW Google Search tool
             Tool(
                 name="document_qa_retriever",
                 func=_run_document_qa_retriever_tool_for_session, # Use the dynamic helper function
@@ -613,13 +679,14 @@ def api_bot():
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
             
-            **Tool Usage Priority:**
-            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your uploaded documents AND the pre-scraped web content.
+            **Tool Usage Priority and Guidelines:**
+            - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your uploaded documents AND the pre-scraped web content. This is your primary source for internal knowledge.
+            - **Google Search:** Use `Google Search` for general knowledge questions, current events, or anything that requires up-to-date information not found in the provided documents. If a question is clearly about recent events or a broad fact not likely in your specific documents, use this tool.
             - **Weather Information:** Use `get_current_weather` for real-time weather.
                 - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
             
             **General Knowledge Fallback:**
-            - If a question **cannot be answered by any of your tools** (e.g., "how far is Earth from the Moon?", "who won FIFA last?", general facts), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.
+            - If a question **cannot be answered by any of your tools** and is a common fact (e.g., "how far is Earth from the Moon?"), use your inherent general knowledge to provide a concise and relevant answer directly. Do not apologize for not using a tool if you can answer directly.
             
             **Response Style:**
             - Always provide a direct and factual answer.
@@ -661,7 +728,7 @@ def api_bot():
         return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
         # Catch specific Google API errors for better user feedback
-        from google.api_core import exceptions as google_exceptions # <--- Moved import here for consistency
+        from google.api_core import exceptions as google_exceptions
 
         if isinstance(e, google_exceptions.InternalServerError) or (
             hasattr(e, 'args') and len(e.args) > 0 and 'InternalServerError' in str(e.args[0])
@@ -711,7 +778,7 @@ if __name__ == '__main__':
     ingestion_utils.set_ingestion_config(
         config.WEB_SCRAPER_USER_AGENT, 
         config.SCRAPE_DELAY_SECONDS,
-        config.MAX_DOCUMENTS_TO_SCRAPE # Pass the new configurable value
+        config.MAX_DOCUMENTS_TO_SCRAPE
     )
     
     initialize_rag_components(model_mode)

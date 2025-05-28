@@ -20,3 +20,5 @@ pysqlite3-binary
 pdfminer.six==20221105
 requests
 beautifulsoup4==4.12.3
+langchain-google-community # Google Search API Wrapper for LangChain
+google-api-python-client # Underlying Google API client library
