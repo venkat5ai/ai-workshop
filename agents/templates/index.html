@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document AI Agent</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> 
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -71,6 +72,27 @@
             flex-direction: column; /* Ensure messages stack vertically */
             gap: 10px; /* Space between messages */
         }
+
+        /* --- IMPORTANT: Styles for Markdown elements within chat messages --- */
+        .message p { /* Target paragraphs within messages */
+            margin-top: 0.5em;
+            margin-bottom: 0.5em;
+            line-height: 1.5;
+        }
+        .message ul, .message ol { /* Target lists within messages */
+            padding-left: 20px;
+            margin-top: 0.5em;
+            margin-bottom: 0.5em;
+        }
+        .message li { /* Target list items */
+            margin-bottom: 0.2em;
+        }
+        .message strong { /* Target bold text */
+            font-weight: bold;
+        }
+        /* Add more styles as needed for other markdown elements like `em`, `h1`, `a`, etc. */
+        /* --- END Markdown Styles --- */
+
 
         .message {
             max-width: 85%;
@@ -326,7 +348,6 @@
             userInput.value = ''; // Clear input
 
             // Display "Typing..." message
-            // Correct: Pass classes as separate arguments to appendMessage
             const typingMessageElement = appendMessage('Agent is typing...', 'bot-message', 'info-message');
             chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom
 
@@ -354,10 +375,11 @@
                 const data = await response.json();
 
                 if (data.error) {
-                    appendMessage(`Error: ${data.error}`, 'bot-message', 'error'); // Corrected
+                    appendMessage(`Error: ${data.error}`, 'bot-message', 'error');
                     displayChatStatus(`Error: ${data.error}`, 'error');
                 } else {
-                    appendMessage(data.answer, 'bot-message');
+                    // *** IMPORTANT CHANGE FOR MARKDOWN RENDERING ***
+                    appendMessage(data.answer, 'bot-message', 'markdown-content'); // Add a class to identify markdown content
                     displayChatStatus('Message sent successfully!', 'success');
                     if (data.session_id && !sessionId) {
                         sessionId = data.session_id;
@@ -370,18 +392,28 @@
                 if (typingMessageElement && typingMessageElement.parentNode) {
                     typingMessageElement.parentNode.removeChild(typingMessageElement);
                 }
-                appendMessage('Sorry, I am unable to connect to the agent right now. Please try again later.', 'bot-message', 'error'); // Corrected
+                appendMessage('Sorry, I am unable to connect to the agent right now. Please try again later.', 'bot-message', 'error');
                 displayChatStatus(`Network error: ${error.message}. Please check console for details.`, 'error');
             } finally {
                 chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom again
             }
         }
 
-        // Modified appendMessage to accept multiple class names
-        function appendMessage(text, ...classNames) { // Use rest parameter for class names
+        // Modified appendMessage to accept multiple class names and handle Markdown
+        function appendMessage(text, ...classNames) {
             const messageElement = document.createElement('div');
-            messageElement.classList.add('message', ...classNames); // Use spread operator to add all class names
-            messageElement.textContent = text;
+            messageElement.classList.add('message', ...classNames);
+
+            // Check if this message should be rendered as Markdown
+            if (classNames.includes('markdown-content')) {
+                // Use marked.js to parse Markdown into HTML
+                // For security, ensure you trust the source of this Markdown (your backend's LLM output).
+                messageElement.innerHTML = marked.parse(text); 
+            } else {
+                // For plain text (like user messages or simple status updates)
+                messageElement.textContent = text;
+            }
+            
             chatWindow.appendChild(messageElement);
             chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll to the latest message
             return messageElement; // Return the created element
