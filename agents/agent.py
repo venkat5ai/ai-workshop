@@ -203,14 +203,23 @@ weather_tool = Tool(
 
 # --- CrossEncoderCompressor Class (MOVED TO GLOBAL SCOPE AND NOW IMPLEMENTS abstract method) ---
 class CrossEncoderCompressor(BaseDocumentCompressor): # Inherit from BaseDocumentCompressor
-    def __init__(self, model: CrossEncoder, top_n: int = 3):
-        # IMPORTANT: Set model and top_n BEFORE calling super().__init__()
-        # This ensures they are available when BaseDocumentCompressor's __init__
-        # potentially runs validation or other logic that might expect them.
-        self.model = model
+    # Use a private variable _model and a public property model
+    # This is sometimes necessary if the parent class has its own 'model' property
+    # that might interfere, or if you need to do lazy loading/validation.
+    _model: CrossEncoder = None # Initialize with None
+    top_n: int = 3 # Can be a Pydantic field
+
+    def __init__(self, model: CrossEncoder, top_n: int = 3, **kwargs):
+        super().__init__(**kwargs) # Call parent constructor first
+        self._model = model # Assign to the private variable
         self.top_n = top_n
-        super().__init__() # Call the constructor of the parent class
-        logger.info(f"CrossEncoderCompressor initialized with top_n={top_n}")
+        logger.info(f"CrossEncoderCompressor initialized with top_n={self.top_n}")
+
+    @property
+    def model(self) -> CrossEncoder:
+        # This property ensures the model is always accessible via .model
+        # and can include lazy loading if needed, though here it's direct.
+        return self._model
 
     # This is the concrete implementation of the abstract method from BaseDocumentCompressor
     def compress_documents(
@@ -221,7 +230,12 @@ class CrossEncoderCompressor(BaseDocumentCompressor): # Inherit from BaseDocumen
         
         passages = [doc.page_content for doc in documents]
         sentence_pairs = [[query, passage] for passage in passages]
-        # self.model should now be guaranteed to be initialized here
+        
+        # Access model via the property to ensure it's loaded and available
+        if self.model is None: # Check if model is None (should ideally not happen if initialized correctly)
+            logger.error("CrossEncoder model is not initialized in compressor. Skipping reranking.")
+            return documents # Return original documents if model is missing
+
         scores = self.model.predict(sentence_pairs)
         
         scored_documents = sorted(
@@ -237,6 +251,7 @@ class CrossEncoderCompressor(BaseDocumentCompressor): # Inherit from BaseDocumen
 def check_gemini_models():
     """
     Checks and logs available Gemini models if GOOGLE_API_KEY is set.
+    It specifically checks for the configured model and logs available ones if not found.
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -246,16 +261,36 @@ def check_gemini_models():
     genai.configure(api_key=api_key)
     
     logger.info("--- Checking available Gemini models ---")
-    available_models = []
+    available_model_names = []
     try:
-        for m in genai.list_models():
+        # Get all models that support generateContent
+        all_listed_models = list(genai.list_models())
+        for m in all_listed_models:
             if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        logger.info("--- End of available models ---")
+                available_model_names.append(m.name)
+        
+        configured_model = config.GEMINI_MODEL_TO_USE
+
+        if configured_model in available_model_names:
+            logger.info(f"Configured Gemini model '{configured_model}' is available and ready for use.")
+        else:
+            logger.error(f"Configured Gemini model '{configured_model}' is NOT available for your API key.")
+            logger.error("Please ensure the model name is correct, the Gemini API is enabled in your Google Cloud Project,")
+            logger.error("and your API key has the necessary permissions.")
+            logger.info("--- Full list of available Gemini models supporting 'generateContent' ---")
+            if not available_model_names:
+                logger.info("No models supporting 'generateContent' were found at all with the provided API key.")
+            else:
+                for model_name in sorted(available_model_names): # Sort for readability
+                    logger.info(f"  - {model_name}")
+            logger.info("--- End of available models list ---")
+        
+        logger.info(f"--- End of available models check ---")
+
     except Exception as e:
         logger.error(f"Error listing models: {e}")
-        logger.error("Please double-check your GOOGLE_API_KEY and internet connection if using Gemini.")
-    return available_models
+        logger.error("Please double-check your GOOGLE_API_KEY, internet connection, and API enablement if using Gemini.")
+    return available_model_names
 
 
 # --- Function to initialize the RAG components ---
@@ -344,9 +379,7 @@ def initialize_rag_components(model_mode: str):
     else: # If no existing DB and no texts to load, create an empty ChromaDB
         logger.info("No existing ChromaDB and no documents to load. Initializing an empty ChromaDB vector store.")
         # Create a ChromaDB instance, possibly with a dummy document or by instantiating collection directly
-        # For simplicity, we can create a temporary empty collection or ensure the Chroma object is just instantiated
         db = Chroma(embedding_function=embeddings, persist_directory=config.CHROMA_DB_DIRECTORY, collection_name=config.COLLECTION_NAME)
-        # db.persist() # Not needed if collection is empty, will be persisted on first add
         logger.info("Empty ChromaDB vector store initialized.")
 
 
@@ -372,18 +405,25 @@ def initialize_rag_components(model_mode: str):
     # Initialize the reranker model
     logger.info(f"Loading reranker model: {config.RERANKER_MODEL_NAME}...")
     try:
+        # The CrossEncoder model itself should be initialized, not the string name
         reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
-        # Instantiate the globally defined CrossEncoderCompressor, now correctly implementing abstract method
-        compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
-        retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=base_retriever
-        )
-        logger.info("ContextualCompressionRetriever with Reranker initialized.")
+        logger.info(f"CrossEncoder model '{config.RERANKER_MODEL_NAME}' loaded successfully.") # Added log
+        
+        # Only initialize compressor if reranker_model loaded successfully and is not None
+        if reranker_model:
+            compressor = CrossEncoderCompressor(model=reranker_model, top_n=config.RERANKER_TOP_K)
+            retriever = ContextualCompressionRetriever(
+                base_compressor=compressor, base_retriever=base_retriever
+            )
+            logger.info("ContextualCompressionRetriever with Reranker initialized.")
+        else:
+            logger.warning("Reranker model failed to load (returned None). Proceeding without reranking.")
+            retriever = base_retriever # Fallback to base retriever if reranker model is None
 
     except Exception as e:
-        logger.error(f"Error loading or initializing reranker model '{config.RERANKER_MODEL_NAME}': {e}")
+        logger.error(f"Error loading or initializing reranker model '{config.RERANKER_MODEL_NAME}': {e}", exc_info=True) # exc_info=True for full traceback
         logger.error("Proceeding without reranking. Retrieval quality might be lower.")
-        retriever = base_retriever # Fallback to base retriever if reranker fails
+        retriever = base_retriever # Fallback to base retriever if any error occurs
         
     logger.info("\nRAG components initialized.")
 
@@ -454,7 +494,7 @@ def upload_document():
                 try: # Re-add reranking if it was active
                     reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
                     # Use globally defined class, now correctly implementing abstract method
-                    compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
+                    compressor = CrossEncoderCompressor(model=reranker_model, top_n=config.RERANKER_TOP_K)
                     retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_retriever)
                 except Exception as e:
                     logger.error(f"Could not re-initialize reranker after DB re-initialization: {e}")
