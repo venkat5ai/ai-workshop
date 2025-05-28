@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Assistant Chat</title>
+    <title>Document Assistant</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -12,182 +12,305 @@
             background-color: #f4f4f4;
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
             min-height: 100vh;
+            flex-direction: column;
         }
-        .chat-container {
+        .container {
             background-color: #fff;
+            padding: 20px 30px;
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
             width: 100%;
-            max-width: 700px;
+            max-width: 800px;
+            margin-bottom: 20px; /* Space between upload and chat */
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        #upload-section {
+            margin-bottom: 25px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        #upload-section h2 {
+            margin-top: 0;
+            color: #555;
+            font-size: 1.2em;
+            border-bottom: 1px dashed #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        #fileInput {
+            border: 1px solid #ccc;
+            padding: 8px;
+            border-radius: 4px;
+            width: calc(100% - 100px); /* Adjust width */
+            margin-right: 10px;
+            box-sizing: border-box;
+        }
+        #uploadButton {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.2s;
+        }
+        #uploadButton:hover {
+            background-color: #45a049;
+        }
+        #uploadStatus {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        #uploadStatus.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        #uploadStatus.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        #uploadStatus.warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+
+        #chat-section {
             display: flex;
             flex-direction: column;
+            height: 500px; /* Fixed height for chat area */
+            border: 1px solid #ddd;
+            border-radius: 5px;
             overflow: hidden;
-            height: 80vh; /* Make chat container take up more vertical space */
         }
-        .chat-header {
-            background-color: #007bff;
-            color: white;
-            padding: 15px;
-            font-size: 1.2em;
-            text-align: center;
-            border-bottom: 1px solid #0056b3;
-        }
-        .chat-messages {
+        #messages {
             flex-grow: 1;
             padding: 15px;
             overflow-y: auto;
             border-bottom: 1px solid #eee;
-            background-color: #e9e9e9;
+            background-color: #fdfdfd;
         }
         .message {
             margin-bottom: 10px;
             padding: 8px 12px;
-            border-radius: 15px;
+            border-radius: 5px;
             max-width: 80%;
-            word-wrap: break-word;
         }
-        .message.user {
-            background-color: #dcf8c6;
+        .user-message {
+            background-color: #e0f7fa;
             align-self: flex-end;
             margin-left: auto;
+            border-bottom-right-radius: 0;
         }
-        .message.bot {
-            background-color: #ffffff;
-            border: 1px solid #ddd;
+        .bot-message {
+            background-color: #e8f5e9;
             align-self: flex-start;
             margin-right: auto;
+            border-bottom-left-radius: 0;
         }
-        .chat-input {
+        #input-area {
             display: flex;
-            padding: 15px;
-            border-top: 1px solid #eee;
+            padding: 10px 15px;
+            background-color: #f0f0f0;
+            border-top: 1px solid #ddd;
         }
-        .chat-input input[type="text"] {
+        #questionInput {
             flex-grow: 1;
             padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 20px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
             margin-right: 10px;
-            outline: none;
             font-size: 1em;
         }
-        .chat-input button {
+        #sendButton {
+            padding: 10px 20px;
             background-color: #007bff;
             color: white;
             border: none;
-            padding: 10px 20px;
-            border-radius: 20px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 1em;
-            transition: background-color 0.3s ease;
+            transition: background-color 0.2s;
         }
-        .chat-input button:hover {
+        #sendButton:hover {
             background-color: #0056b3;
         }
-        .loading-indicator {
-            text-align: center;
-            font-style: italic;
-            color: #555;
-            margin-top: 10px;
-            display: none; /* Hidden by default */
+        .status-message {
+            color: red;
+            font-size: 0.9em;
+            margin-top: 5px;
         }
     </style>
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-header">Document Assistant Chatbot</div>
-        <div class="chat-messages" id="chat-messages">
-            <div class="message bot">Hello! How can I help you with your documents today?</div>
+    <div class="container">
+        <h1>Document Assistant</h1>
+
+        <div id="upload-section">
+            <h2>Upload Documents to Knowledge Base</h2>
+            <div>
+                <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.csv,.xlsx,.pptx">
+                <button id="uploadButton">Upload Document</button>
+            </div>
+            <div id="uploadStatus"></div>
         </div>
-        <div class="loading-indicator" id="loading-indicator">Assistant is typing...</div>
-        <div class="chat-input">
-            <input type="text" id="user-input" placeholder="Ask a question..." autofocus>
-            <button id="send-button">Send</button>
+
+        <div id="chat-section">
+            <div id="messages">
+                </div>
+            <div id="input-area">
+                <input type="text" id="questionInput" placeholder="Ask a question...">
+                <button id="sendButton">Send</button>
+            </div>
+            <div id="chatStatus" class="status-message"></div>
         </div>
     </div>
 
     <script>
-        const chatMessages = document.getElementById('chat-messages');
-        const userInput = document.getElementById('user-input');
-        const sendButton = document.getElementById('send-button');
-        const loadingIndicator = document.getElementById('loading-indicator');
-
-        // Retrieve session_id from local storage or generate a new one
-        let sessionId = localStorage.getItem('documentAssistantSessionId'); // Renamed session ID key
+        let sessionId = localStorage.getItem('sessionId');
         if (!sessionId) {
-            sessionId = crypto.randomUUID(); // Generates a UUID
-            localStorage.setItem('documentAssistantSessionId', sessionId); // Renamed session ID key
-            console.log('New session ID generated and stored:', sessionId);
-        } else {
-            console.log('Using existing session ID:', sessionId);
+            sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('sessionId', sessionId);
         }
 
-        // Function to display a message in the chat
+        const messagesDiv = document.getElementById('messages');
+        const questionInput = document.getElementById('questionInput');
+        const sendButton = document.getElementById('sendButton');
+        const chatStatusDiv = document.getElementById('chatStatus');
+
+        // Document Upload Elements
+        const fileInput = document.getElementById('fileInput');
+        const uploadButton = document.getElementById('uploadButton');
+        const uploadStatusDiv = document.getElementById('uploadStatus');
+
+        // Function to display messages in the chat
         function displayMessage(message, sender) {
             const messageElement = document.createElement('div');
-            messageElement.classList.add('message', sender);
+            messageElement.classList.add('message');
+            messageElement.classList.add(sender + '-message');
             messageElement.textContent = message;
-            chatMessages.appendChild(messageElement);
-            chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to bottom
+            messagesDiv.appendChild(messageElement);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight; // Auto-scroll to bottom
         }
 
-        // Function to send message to Flask API
-        async function sendMessage() {
-            const question = userInput.value.trim();
-            if (!question) return;
-
-            displayMessage(question, 'user');
-            userInput.value = ''; // Clear input field
-
-            loadingIndicator.style.display = 'block'; // Show loading indicator
-            sendButton.disabled = true; // Disable send button
-
-            try {
-                const response = await fetch('http://127.0.0.1:3010/api/bot', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ question: question, session_id: sessionId }),
-                });
-
-                const data = await response.json();
-
-                if (response.ok) {
-                    displayMessage(data.answer, 'bot');
-                    sessionId = data.session_id || sessionId;
-                    localStorage.setItem('documentAssistantSessionId', sessionId); // Renamed session ID key
-                } else {
-                    displayMessage(`Error: ${data.error || 'Failed to get a response.'}`, 'bot');
-                }
-            } catch (error) {
-                console.error('Fetch error:', error);
-                displayMessage('Error: Could not connect to the assistant. Please check if the server is running.', 'bot');
-            } finally {
-                loadingIndicator.style.display = 'none'; // Hide loading indicator
-                sendButton.disabled = false; // Re-enable send button
-                userInput.focus(); // Focus input for next question
-            }
-        }
-
-        // Event Listeners
+        // --- Chat Logic ---
         sendButton.addEventListener('click', sendMessage);
-        userInput.addEventListener('keypress', (event) => {
-            if (event.key === 'Enter') {
+        questionInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
                 sendMessage();
             }
         });
 
-        // Clear session ID from localStorage when the page is closed or reloaded
-        window.addEventListener('beforeunload', () => {
-            localStorage.removeItem('documentAssistantSessionId'); // Renamed session ID key
-            console.log('Session ID cleared from localStorage on page unload.');
-        });
+        async function sendMessage() {
+            const question = questionInput.value.trim();
+            if (question === '') {
+                return;
+            }
 
-        // Initialize focus on input field
-        userInput.focus();
+            displayMessage(question, 'user');
+            questionInput.value = '';
+            chatStatusDiv.textContent = 'Thinking...';
+            sendButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/bot', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ question: question, session_id: sessionId })
+                });
+
+                // The backend API now always returns 200 OK for logical errors,
+                // with error details in the JSON payload.
+                // We only throw for true network/HTTP protocol errors.
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.error) {
+                    displayMessage(`Error: ${data.error}`, 'bot');
+                    chatStatusDiv.textContent = `Error: ${data.error}`; // Display specific error from backend
+                    chatStatusDiv.style.color = 'red';
+                } else {
+                    displayMessage(data.answer, 'bot');
+                    chatStatusDiv.textContent = ''; // Clear status on success
+                }
+                sessionId = data.session_id; // Update session ID in case it was new
+                localStorage.setItem('sessionId', sessionId);
+
+            } catch (error) {
+                console.error('Fetch error:', error);
+                displayMessage("Error: Could not connect to the assistant. Please check your network or server status.", 'bot');
+                chatStatusDiv.textContent = "Error: Could not connect to the assistant.";
+                chatStatusDiv.style.color = 'red';
+            } finally {
+                sendButton.disabled = false;
+            }
+        }
+
+        // --- Document Upload Logic ---
+        uploadButton.addEventListener('click', uploadDocument);
+
+        async function uploadDocument() {
+            const file = fileInput.files[0];
+            if (!file) {
+                uploadStatusDiv.textContent = 'Please select a file to upload.';
+                uploadStatusDiv.className = 'uploadStatus warning';
+                return;
+            }
+
+            uploadStatusDiv.textContent = 'Uploading...';
+            uploadStatusDiv.className = ''; // Clear previous status class
+            uploadButton.disabled = true;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/api/documents/upload', {
+                    method: 'POST',
+                    body: formData // FormData sets 'Content-Type': 'multipart/form-data' automatically
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    uploadStatusDiv.textContent = data.message;
+                    uploadStatusDiv.className = 'uploadStatus success';
+                    fileInput.value = ''; // Clear the file input
+                } else if (data.status === 'warning') {
+                     uploadStatusDiv.textContent = data.message;
+                     uploadStatusDiv.className = 'uploadStatus warning';
+                     fileInput.value = ''; // Clear the file input even if it was a warning
+                }
+                else {
+                    uploadStatusDiv.textContent = `Upload Error: ${data.message || 'An unknown error occurred.'}`;
+                    uploadStatusDiv.className = 'uploadStatus error';
+                }
+            } catch (error) {
+                console.error('Upload fetch error:', error);
+                uploadStatusDiv.textContent = 'Network error: Could not connect to the server.';
+                uploadStatusDiv.className = 'uploadStatus error';
+            } finally {
+                uploadButton.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>
