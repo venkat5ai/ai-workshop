@@ -229,7 +229,7 @@ def run_Google_Search(query: str) -> str:
     for attempt in range(max_retries):
         try:
             # Use search.results() to get structured data (title, snippet, link)
-            results = Google_Search_wrapper.results(query, config.Google_Search_TOP_K)
+            results = Google_Search_wrapper.results(query, config.GOOGLE_SEARCH_TOP_K)
             
             if not results:
                 return "No relevant results found for the query."

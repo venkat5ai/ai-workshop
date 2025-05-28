@@ -35,6 +35,7 @@ OLLAMA_MODEL_TO_USE = os.getenv("OLLAMA_MODEL_TO_USE", "gemma3:latest")
 # GOOGLE_CSE_ID is expected to be set as an environment variable (e.g., GOOGLE_CSE_ID)
 GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY") # No default, must be provided via env var
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID") # No default, must be provided via env var
+GOOGLE_SEARCH_TOP_K = int(os.getenv("GOOGLE_SEARCH_TOP_K", 5)) # Max number of top results from GOOGLE SEARCH
 
 # RAG Configuration
 RETRIEVER_SEARCH_K = int(os.getenv("RETRIEVER_SEARCH_K", 3)) # Number of documents to retrieve initially from vector store
