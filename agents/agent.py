@@ -269,26 +269,42 @@ def initialize_rag_components(model_mode: str):
     """
     global llm, retriever, db # Added db to global
 
-    # --- 1. Load Documents from Various Types (Local files and Web) ---
+    # Ensure the document storage directory exists. This is crucial for the app to start.
+    try:
+        os.makedirs(config.DOCUMENT_STORAGE_DIRECTORY, exist_ok=True)
+        logger.info(f"Ensured document storage directory exists: {config.DOCUMENT_STORAGE_DIRECTORY}")
+    except OSError as e:
+        logger.error(f"Failed to create document storage directory '{config.DOCUMENT_STORAGE_DIRECTORY}': {e}")
+        logger.error("Application cannot proceed without a writable document storage directory.")
+        sys.exit(1) # Critical error, cannot continue if directory can't be created
+
     all_documents = []
 
-    # Load local documents
-    logger.info(f"Loading local documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via LangChainUnstructuredFileLoader)")
-    try:
-        local_loader = DirectoryLoader(
-            config.DOCUMENT_STORAGE_DIRECTORY,
-            loader_cls=LangChainUnstructuredFileLoader, # Use the aliased class
-            recursive=True,
-            show_progress=True,
-        )
-        local_documents = local_loader.load()
-        all_documents.extend(local_documents)
-        logger.info(f"Loaded {len(local_documents)} local document(s).")
-    except Exception as e:
-        logger.exception(f"Detailed error during local document loading: {e}")
-        logger.error(f"Error loading local documents: {e}")
-        logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
-        sys.exit(1)
+    # --- 1. Load Documents from Various Types (Local files and Web) ---
+    logger.info(f"Attempting to load local documents from: {config.DOCUMENT_STORAGE_DIRECTORY}")
+    
+    # Check if the directory is actually a directory before passing to DirectoryLoader
+    if not os.path.isdir(config.DOCUMENT_STORAGE_DIRECTORY):
+        logger.error(f"'{config.DOCUMENT_STORAGE_DIRECTORY}' is not a valid directory. Skipping local document loading.")
+        local_documents = [] # Treat as no documents loaded
+    else:
+        try:
+            local_loader = DirectoryLoader(
+                config.DOCUMENT_STORAGE_DIRECTORY,
+                loader_cls=LangChainUnstructuredFileLoader, # Use the aliased class
+                recursive=True,
+                show_progress=True,
+            )
+            local_documents = local_loader.load()
+            logger.info(f"Loaded {len(local_documents)} local document(s).")
+        except Exception as e:
+            # Catch errors during loading, but don't crash the app.
+            # This handles cases where the directory exists but files inside are problematic.
+            logger.exception(f"Detailed error during local document loading from '{config.DOCUMENT_STORAGE_DIRECTORY}': {e}")
+            logger.error("Error loading local documents. Application will proceed without them.")
+            local_documents = [] # Ensure it's an empty list if loading fails
+
+    all_documents.extend(local_documents)
 
     # Load web documents from web.conf via deep scraping
     # Set the ingestion config for user agent, scrape delay, and max documents
@@ -311,11 +327,13 @@ def initialize_rag_components(model_mode: str):
     logger.info("Creating embeddings and storing in ChromaDB...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
+    # If no documents are loaded, ChromaDB can still be initialized as an empty DB.
+    # This prevents errors if 'texts' is empty.
     if os.path.exists(config.CHROMA_DB_DIRECTORY) and os.listdir(config.CHROMA_DB_DIRECTORY):
         logger.info("Loading existing ChromaDB vector store...")
         db = Chroma(persist_directory=config.CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=config.COLLECTION_NAME)
-    else:
-        logger.info("Creating new ChromaDB vector store...")
+    elif texts: # Only create from documents if there are actual texts
+        logger.info("Creating new ChromaDB vector store from loaded documents...")
         db = Chroma.from_documents(
             texts,
             embeddings,
@@ -323,6 +341,14 @@ def initialize_rag_components(model_mode: str):
             collection_name=config.COLLECTION_NAME
         )
         logger.info("ChromaDB vector store created and persisted.")
+    else: # If no existing DB and no texts to load, create an empty ChromaDB
+        logger.info("No existing ChromaDB and no documents to load. Initializing an empty ChromaDB vector store.")
+        # Create a ChromaDB instance, possibly with a dummy document or by instantiating collection directly
+        # For simplicity, we can create a temporary empty collection or ensure the Chroma object is just instantiated
+        db = Chroma(embedding_function=embeddings, persist_directory=config.CHROMA_DB_DIRECTORY, collection_name=config.COLLECTION_NAME)
+        # db.persist() # Not needed if collection is empty, will be persisted on first add
+        logger.info("Empty ChromaDB vector store initialized.")
+
 
     # --- 4. Set up the Language Model (Conditional based on mode) ---
     if model_mode == "local":
@@ -389,7 +415,7 @@ def upload_document():
             filename = secure_filename(file.filename)
             upload_path = os.path.join(config.DOCUMENT_STORAGE_DIRECTORY, filename)
             
-            # Ensure the directory exists
+            # Ensure the directory exists before saving the file
             os.makedirs(config.DOCUMENT_STORAGE_DIRECTORY, exist_ok=True)
             
             file.save(upload_path)
