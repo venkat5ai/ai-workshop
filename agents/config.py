@@ -18,18 +18,23 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents_collection")
 
 # --- API Tool Configuration ---
 # Store API base URLs and API keys here for easy management
+
 # For OpenWeatherMap:
 # API Key should be set as an environment variable (OPENWEATHER_API_KEY)
-# Base URL for current weather by zip code (using 'zip' for zip code in API call)
-# Example URL for Current Weather Data: https://api.openweathermap.org/data/2.5/weather?zip={zip code},{country code}&appid={API key}
 OPENWEATHER_BASE_URL = os.getenv("OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/weather")
 
 # Google Gemini LLM Configuration
 # GOOGLE_API_KEY is expected to be set as an environment variable directly
-GEMINI_MODEL_TO_USE = os.getenv("GEMINI_MODEL_TO_USE", "models/gemini-2.5-flash-preview-05-20") # Consider changing to "models/gemini-pro" or "models/gemini-1.5-flash-latest" if you have 500 errors
+GEMINI_MODEL_TO_USE = os.getenv("GEMINI_MODEL_TO_USE", "models/gemini-2.5-flash-preview-05-20")
 
 # Ollama LLM Configuration
 OLLAMA_MODEL_TO_USE = os.getenv("OLLAMA_MODEL_TO_USE", "gemma3:latest")
+
+# --- Google Search Configuration ---
+# GOOGLE_SEARCH_API_KEY is expected to be set as an environment variable (e.g., GOOGLE_SEARCH_API_KEY)
+# GOOGLE_CSE_ID is expected to be set as an environment variable (e.g., GOOGLE_CSE_ID)
+GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY") # No default, must be provided via env var
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID") # No default, must be provided via env var
 
 # RAG Configuration
 RETRIEVER_SEARCH_K = int(os.getenv("RETRIEVER_SEARCH_K", 3)) # Number of documents to retrieve initially from vector store
