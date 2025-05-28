@@ -1,12 +1,11 @@
 # First, ensure you have the necessary libraries installed.
-# You can install them by running the following in your terminal:
-# pip install Flask langchain chromadb pypdf sentence-transformers langchain-community langchain-huggingface langchain-chroma Flask-CORS unstructured[pdf,docx,csv,pptx] python-magic python-docx openpyxl
+# You can run 'pip install -r requirements.txt' where requirements.txt is provided.
 
 """
 This script implements a Retrieval-Augmented Generation (RAG) assistant
 using Flask for the API, LangChain for orchestration, and various
 libraries for document processing and LLM interaction. It supports
-both local (Ollama) and cloud (Google Gemini) LLM modes.
+both local (Ollama) and cloud (Google Gemini) LLM mode.
 """
 
 # --- IMPORTANT: Patch sqlite3 for ChromaDB compatibility ---
@@ -25,7 +24,6 @@ import logging
 import json
 import requests
 import google.generativeai as genai
-from abc import ABC # Removed abstractmethod as it's not needed for the class definition itself
 from werkzeug.utils import secure_filename # For secure file naming
 
 # --- Flask and related imports ---
@@ -35,7 +33,11 @@ from flask_cors import CORS
 # --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
+from langchain_community.document_loaders import DirectoryLoader
+# Temporarily alias UnstructuredFileLoader from langchain_community
+# The deprecation warning indicates this should move to 'langchain-unstructured' package
+from langchain_community.document_loaders import UnstructuredFileLoader as LangChainUnstructuredFileLoader
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -53,6 +55,7 @@ from langchain.tools import Tool
 # --- NEW: Imports for Reranking ---
 from sentence_transformers import CrossEncoder # For reranking
 from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors.base import BaseDocumentCompressor # <--- NEW IMPORT
 
 # --- NEW: Import ingestion utilities ---
 import ingestion_utils # Import the new file
@@ -198,6 +201,37 @@ weather_tool = Tool(
     description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
 )
 
+# --- CrossEncoderCompressor Class (MOVED TO GLOBAL SCOPE AND NOW IMPLEMENTS abstract method) ---
+class CrossEncoderCompressor(BaseDocumentCompressor): # Inherit from BaseDocumentCompressor
+    def __init__(self, model: CrossEncoder, top_n: int = 3):
+        # IMPORTANT: Set model and top_n BEFORE calling super().__init__()
+        # This ensures they are available when BaseDocumentCompressor's __init__
+        # potentially runs validation or other logic that might expect them.
+        self.model = model
+        self.top_n = top_n
+        super().__init__() # Call the constructor of the parent class
+        logger.info(f"CrossEncoderCompressor initialized with top_n={top_n}")
+
+    # This is the concrete implementation of the abstract method from BaseDocumentCompressor
+    def compress_documents(
+        self, documents: list[Document], query: str, callbacks=None
+    ) -> list[Document]:
+        if not documents:
+            return []
+        
+        passages = [doc.page_content for doc in documents]
+        sentence_pairs = [[query, passage] for passage in passages]
+        # self.model should now be guaranteed to be initialized here
+        scores = self.model.predict(sentence_pairs)
+        
+        scored_documents = sorted(
+            zip(scores, documents), key=lambda x: x[0], reverse=True
+        )
+        
+        compressed_documents = [doc for score, doc in scored_documents[:self.top_n]]
+        logger.debug(f"Reranked {len(documents)} documents to top {len(compressed_documents)} for query: '{query}'")
+        return compressed_documents
+
 
 # --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
@@ -239,11 +273,11 @@ def initialize_rag_components(model_mode: str):
     all_documents = []
 
     # Load local documents
-    logger.info(f"Loading local documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via UnstructuredFileLoader)")
+    logger.info(f"Loading local documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via LangChainUnstructuredFileLoader)")
     try:
         local_loader = DirectoryLoader(
             config.DOCUMENT_STORAGE_DIRECTORY,
-            loader_cls=UnstructuredFileLoader,
+            loader_cls=LangChainUnstructuredFileLoader, # Use the aliased class
             recursive=True,
             show_progress=True,
         )
@@ -288,7 +322,7 @@ def initialize_rag_components(model_mode: str):
             persist_directory=config.CHROMA_DB_DIRECTORY,
             collection_name=config.COLLECTION_NAME
         )
-        logger.info("ChromaDB vector store created and persisted.") # This line will not be hit if db.persist is removed
+        logger.info("ChromaDB vector store created and persisted.")
 
     # --- 4. Set up the Language Model (Conditional based on mode) ---
     if model_mode == "local":
@@ -313,40 +347,7 @@ def initialize_rag_components(model_mode: str):
     logger.info(f"Loading reranker model: {config.RERANKER_MODEL_NAME}...")
     try:
         reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
-        # Wrap the CrossEncoder in a custom compressor, inheriting from ABC
-        class CrossEncoderCompressor(ABC):
-            def __init__(self, model: CrossEncoder, top_n: int = 3):
-                self.model = model
-                self.top_n = top_n
-                logger.info(f"CrossEncoderCompressor initialized with top_n={top_n}")
-
-            # Removed @abstractmethod here, as you are providing the concrete implementation
-            def _compress_documents(
-                self, documents: list[Document], query: str, callbacks=None
-            ) -> list[Document]:
-                if not documents:
-                    return []
-                
-                # Prepare passages for reranking
-                passages = [doc.page_content for doc in documents]
-                
-                # Generate scores
-                # The model expects a list of [query, passage] pairs
-                sentence_pairs = [[query, passage] for passage in passages]
-                scores = self.model.predict(sentence_pairs)
-                
-                # Sort documents based on scores in descending order
-                # Use a tuple for sorting (score, original_index) to maintain tie-breaking consistency
-                # and to easily map back to original documents
-                scored_documents = sorted(
-                    zip(scores, documents), key=lambda x: x[0], reverse=True
-                )
-                
-                # Select top N documents
-                compressed_documents = [doc for score, doc in scored_documents[:self.top_n]]
-                logger.debug(f"Reranked {len(documents)} documents to top {len(compressed_documents)} for query: '{query}'")
-                return compressed_documents
-        
+        # Instantiate the globally defined CrossEncoderCompressor, now correctly implementing abstract method
         compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
         retriever = ContextualCompressionRetriever(
             base_compressor=compressor, base_retriever=base_retriever
@@ -396,7 +397,7 @@ def upload_document():
 
             # --- Process the new document and update ChromaDB ---
             logger.info(f"Processing uploaded document: '{filename}'...")
-            loader = UnstructuredFileLoader(upload_path)
+            loader = LangChainUnstructuredFileLoader(upload_path) # Using the aliased class
             new_documents = loader.load()
             
             if not new_documents:
@@ -411,7 +412,6 @@ def upload_document():
             if db:
                 # Add new documents to the existing ChromaDB collection
                 db.add_documents(new_texts)
-                # db.persist() # REMOVED THIS LINE
                 logger.info(f"Added {len(new_texts)} chunks from '{filename}' to existing ChromaDB.")
             else:
                 # If db was not initialized for some reason, re-initialize with the new docs
@@ -423,22 +423,11 @@ def upload_document():
                     persist_directory=config.CHROMA_DB_DIRECTORY,
                     collection_name=config.COLLECTION_NAME
                 )
-                # db.persist() # REMOVED THIS LINE
                 # Re-initialize retriever if db object changed
                 base_retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
                 try: # Re-add reranking if it was active
                     reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
-                    class CrossEncoderCompressor(ABC):
-                        def __init__(self, model: CrossEncoder, top_n: int = 3):
-                            self.model = model
-                            self.top_n = top_n
-                        def _compress_documents(self, documents: list[Document], query: str, callbacks=None) -> list[Document]:
-                            if not documents: return []
-                            passages = [doc.page_content for doc in documents]
-                            sentence_pairs = [[query, passage] for passage in passages]
-                            scores = self.model.predict(sentence_pairs)
-                            scored_documents = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
-                            return [doc for score, doc in scored_documents[:self.top_n]]
+                    # Use globally defined class, now correctly implementing abstract method
                     compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
                     retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_retriever)
                 except Exception as e:
@@ -499,6 +488,12 @@ def api_bot():
             ("user", "{input}"),
             ("user", "Standalone question:"),
         ])
+        # IMPORTANT: Ensure 'retriever' is globally initialized and valid here
+        if retriever is None:
+            logger.error("RAG retriever is not initialized. Cannot create agent executor.")
+            # Do not return 500, return 200 with an error message in body
+            return jsonify({"error": "RAG system not fully initialized. Please wait or check server logs."}), 200
+
         retrieval_chain = create_history_aware_retriever(llm, retriever, history_aware_retriever_prompt)
         
         document_qa_prompt = ChatPromptTemplate.from_messages([
@@ -536,7 +531,7 @@ def api_bot():
                 return result.get('answer', 'No answer found from documents.')
             except Exception as e:
                 logger.error(f"Error in document_qa_retriever tool for query '{query}': {e}")
-                return f"Error retrieving document answer: {e}"
+                return f"Error retrieving document answer: An issue occurred while processing the document context."
 
         # 3. Define the tools the agent can use
         tools = [
@@ -549,7 +544,6 @@ def api_bot():
         ]
         
         # 4. Create the Agent
-        # --- MODIFIED AGENT PROMPT ---
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
             
@@ -601,7 +595,9 @@ def api_bot():
         return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
         # Catch specific Google API errors for better user feedback
-        if isinstance(e, genai.types.InternalServerError) or (
+        from google.api_core import exceptions as google_exceptions # <--- Moved import here for consistency
+
+        if isinstance(e, google_exceptions.InternalServerError) or (
             hasattr(e, 'args') and len(e.args) > 0 and 'InternalServerError' in str(e.args[0])
         ):
             user_message = (

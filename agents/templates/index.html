@@ -3,314 +3,507 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Assistant</title>
+    <title>Document AI Agent</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
         body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f4f4f4;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
             justify-content: center;
-            align-items: flex-start;
+            align-items: flex-start; /* Align items to the top */
             min-height: 100vh;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box; /* Include padding in element's total width and height */
+            color: #333;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: row; /* Arrange sections in a row */
+            gap: 20px; /* Space between sections */
+            width: 100%;
+            max-width: 1200px; /* Max width for the whole application */
+            background-color: #fff;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            overflow: hidden; /* For rounded corners */
+        }
+
+        .chat-section, .document-section {
+            padding: 25px;
+            box-sizing: border-box;
+            background-color: #fff;
+        }
+
+        .chat-section {
+            flex: 2; /* Chat takes more space */
+            border-right: 1px solid #eee;
+            display: flex;
+            flex-direction: column;
+            min-height: 600px; /* Minimum height for chat */
+        }
+
+        .document-section {
+            flex: 1; /* Document upload takes less space */
+            min-height: 600px; /* Match chat section height */
+            display: flex;
             flex-direction: column;
         }
-        .container {
-            background-color: #fff;
-            padding: 20px 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 800px;
-            margin-bottom: 20px; /* Space between upload and chat */
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-            margin-bottom: 20px;
-        }
-        #upload-section {
-            margin-bottom: 25px;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
-        #upload-section h2 {
+
+        h1, h2 {
+            color: #2c3e50;
             margin-top: 0;
-            color: #555;
-            font-size: 1.2em;
-            border-bottom: 1px dashed #eee;
-            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .chat-window {
+            flex-grow: 1;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
             margin-bottom: 15px;
+            overflow-y: auto;
+            background-color: #fdfdfd;
+            display: flex;
+            flex-direction: column; /* Ensure messages stack vertically */
+            gap: 10px; /* Space between messages */
         }
-        #fileInput {
+
+        .message {
+            max-width: 85%;
+            padding: 10px 15px;
+            border-radius: 18px;
+            line-height: 1.5;
+            word-wrap: break-word;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .user-message {
+            align-self: flex-end;
+            background-color: #e0f7fa; /* Light cyan */
+            color: #00796b;
+            border-bottom-right-radius: 2px;
+        }
+
+        .bot-message {
+            align-self: flex-start;
+            background-color: #f2f2f2; /* Light gray */
+            color: #333;
+            border-bottom-left-radius: 2px;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+            margin-top: auto; /* Push input area to the bottom */
+        }
+
+        .input-area input[type="text"] {
+            flex-grow: 1;
+            padding: 12px 18px;
             border: 1px solid #ccc;
-            padding: 8px;
-            border-radius: 4px;
-            width: calc(100% - 100px); /* Adjust width */
-            margin-right: 10px;
-            box-sizing: border-box;
+            border-radius: 25px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
         }
-        #uploadButton {
-            padding: 8px 15px;
-            background-color: #4CAF50;
+
+        .input-area input[type="text"]:focus {
+            border-color: #007bff;
+        }
+
+        .input-area button {
+            padding: 12px 20px;
+            background-color: #007bff;
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 25px;
             cursor: pointer;
-            font-size: 1em;
-            transition: background-color 0.2s;
+            font-size: 1rem;
+            transition: background-color 0.2s, transform 0.1s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
-        #uploadButton:hover {
-            background-color: #45a049;
+
+        .input-area button:hover {
+            background-color: #0056b3;
+            transform: translateY(-1px);
         }
-        #uploadStatus {
+
+        .input-area button:active {
+            transform: translateY(0);
+        }
+
+        .status-message {
             margin-top: 15px;
             padding: 10px;
-            border-radius: 4px;
+            border-radius: 5px;
             font-size: 0.9em;
+            word-wrap: break-word;
         }
-        #uploadStatus.success {
+
+        .status-message.success {
             background-color: #d4edda;
             color: #155724;
             border: 1px solid #c3e6cb;
         }
-        #uploadStatus.error {
+
+        .status-message.error {
             background-color: #f8d7da;
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
-        #uploadStatus.warning {
-            background-color: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffeeba;
+
+        .status-message.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
         }
 
-        #chat-section {
+        /* --- Document Upload Area Styles --- */
+        .document-upload-area {
+            flex-grow: 1; /* Allow it to take available space */
+            border: 2px dashed #a0a0a0;
+            border-radius: 10px;
             display: flex;
             flex-direction: column;
-            height: 500px; /* Fixed height for chat area */
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            overflow: hidden;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 20px;
+            cursor: pointer;
+            transition: border-color 0.3s ease, background-color 0.3s ease;
+            margin-bottom: 15px; /* Space before button */
+            background-color: #f8f8f8;
         }
-        #messages {
-            flex-grow: 1;
-            padding: 15px;
-            overflow-y: auto;
-            border-bottom: 1px solid #eee;
-            background-color: #fdfdfd;
+
+        .document-upload-area:hover,
+        .document-upload-area.dragover {
+            border-color: #007bff;
+            background-color: #e6f7ff; /* Light blue background on hover/dragover */
         }
-        .message {
+
+        .document-upload-area i {
+            font-size: 3em;
+            color: #a0a0a0;
             margin-bottom: 10px;
-            padding: 8px 12px;
-            border-radius: 5px;
-            max-width: 80%;
         }
-        .user-message {
-            background-color: #e0f7fa;
-            align-self: flex-end;
-            margin-left: auto;
-            border-bottom-right-radius: 0;
+
+        .document-upload-area p {
+            margin: 0;
+            font-size: 1.1em;
+            color: #555;
         }
-        .bot-message {
-            background-color: #e8f5e9;
-            align-self: flex-start;
-            margin-right: auto;
-            border-bottom-left-radius: 0;
+
+        #fileInput {
+            display: none; /* Hide the default file input */
         }
-        #input-area {
-            display: flex;
-            padding: 10px 15px;
-            background-color: #f0f0f0;
-            border-top: 1px solid #ddd;
+
+        #selectedFileName {
+            margin-top: 10px;
+            font-weight: bold;
+            color: #007bff;
+            display: none; /* Hidden by default, shown when file is selected */
+            word-wrap: break-word; /* Prevent long file names from overflowing */
         }
-        #questionInput {
-            flex-grow: 1;
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            margin-right: 10px;
-            font-size: 1em;
-        }
-        #sendButton {
-            padding: 10px 20px;
-            background-color: #007bff;
+
+        #uploadDocumentButton {
+            width: 100%;
+            padding: 12px;
+            background-color: #28a745; /* Green upload button */
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 1em;
-            transition: background-color 0.2s;
+            font-size: 1.1rem;
+            transition: background-color 0.2s, transform 0.1s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
-        #sendButton:hover {
-            background-color: #0056b3;
+
+        #uploadDocumentButton:hover {
+            background-color: #218838;
+            transform: translateY(-1px);
         }
-        .status-message {
-            color: red;
-            font-size: 0.9em;
-            margin-top: 5px;
+
+        #uploadDocumentButton:active {
+            transform: translateY(0);
+        }
+
+        .document-section .status-message {
+            margin-top: 10px;
+            margin-bottom: 0; /* Adjust margin for document section status */
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column; /* Stack sections vertically on small screens */
+                padding: 10px;
+            }
+            .chat-section, .document-section {
+                border-right: none;
+                border-bottom: 1px solid #eee; /* Add separator when stacked */
+                padding: 15px;
+            }
+            .chat-section {
+                min-height: 400px;
+            }
+            .document-section {
+                min-height: auto; /* Allow height to adjust */
+            }
+            .input-area input[type="text"], .input-area button,
+            #uploadDocumentButton {
+                font-size: 0.9rem;
+                padding: 10px 15px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Document Assistant</h1>
-
-        <div id="upload-section">
-            <h2>Upload Documents to Knowledge Base</h2>
-            <div>
-                <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.csv,.xlsx,.pptx">
-                <button id="uploadButton">Upload Document</button>
+        <div class="chat-section">
+            <h1>Document AI Agent</h1>
+            <div class="chat-window" id="chatWindow">
+                </div>
+            <div class="input-area">
+                <input type="text" id="userInput" placeholder="Ask your question..." autofocus>
+                <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i> Send</button>
             </div>
-            <div id="uploadStatus"></div>
+            <div id="chatStatusMessage" class="status-message"></div>
         </div>
 
-        <div id="chat-section">
-            <div id="messages">
-                </div>
-            <div id="input-area">
-                <input type="text" id="questionInput" placeholder="Ask a question...">
-                <button id="sendButton">Send</button>
+        <div class="document-section">
+            <h2>Upload Document</h2>
+            <div class="document-upload-area" id="dropArea">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <p>Drag & drop files here or click to browse</p>
+                <input type="file" id="fileInput" accept=".pdf,.doc,.docx,.txt,.csv,.xlsx,.pptx">
             </div>
-            <div id="chatStatus" class="status-message"></div>
+            <span id="selectedFileName"></span>
+            <button id="uploadDocumentButton" onclick="uploadDocument()">Upload Document</button>
+            <div id="uploadStatusMessage" class="status-message"></div>
         </div>
     </div>
 
     <script>
-        let sessionId = localStorage.getItem('sessionId');
-        if (!sessionId) {
-            sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('sessionId', sessionId);
-        }
+        let sessionId = null;
+        let selectedFile = null; // Store the selected file object
 
-        const messagesDiv = document.getElementById('messages');
-        const questionInput = document.getElementById('questionInput');
-        const sendButton = document.getElementById('sendButton');
-        const chatStatusDiv = document.getElementById('chatStatus');
-
-        // Document Upload Elements
+        // Elements
+        const chatWindow = document.getElementById('chatWindow');
+        const userInput = document.getElementById('userInput');
+        const chatStatusMessage = document.getElementById('chatStatusMessage');
+        const uploadStatusMessage = document.getElementById('uploadStatusMessage');
+        const dropArea = document.getElementById('dropArea');
         const fileInput = document.getElementById('fileInput');
-        const uploadButton = document.getElementById('uploadButton');
-        const uploadStatusDiv = document.getElementById('uploadStatus');
+        const selectedFileNameSpan = document.getElementById('selectedFileName');
+        const uploadButton = document.getElementById('uploadDocumentButton');
 
-        // Function to display messages in the chat
-        function displayMessage(message, sender) {
-            const messageElement = document.createElement('div');
-            messageElement.classList.add('message');
-            messageElement.classList.add(sender + '-message');
-            messageElement.textContent = message;
-            messagesDiv.appendChild(messageElement);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight; // Auto-scroll to bottom
-        }
-
-        // --- Chat Logic ---
-        sendButton.addEventListener('click', sendMessage);
-        questionInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
+        // Event listener for Enter key in chat input
+        userInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
                 sendMessage();
             }
         });
 
+        // --- Chat Logic ---
         async function sendMessage() {
-            const question = questionInput.value.trim();
+            const question = userInput.value.trim();
             if (question === '') {
+                displayChatStatus('Please enter a question.', 'error');
                 return;
             }
 
-            displayMessage(question, 'user');
-            questionInput.value = '';
-            chatStatusDiv.textContent = 'Thinking...';
-            sendButton.disabled = true;
+            // Display user message
+            appendMessage(question, 'user-message');
+            userInput.value = ''; // Clear input
+
+            // Display "Typing..." message
+            // Fix: Pass classes as separate arguments to classList.add()
+            const typingMessageElement = appendMessage('Agent is typing...', 'bot-message', 'info-message'); // Corrected
+            chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom
+
+            displayChatStatus('Sending message...', 'info');
 
             try {
                 const response = await fetch('/api/bot', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ question: question, session_id: sessionId })
+                    body: JSON.stringify({ question: question, session_id: sessionId }),
                 });
 
-                // The backend API now always returns 200 OK for logical errors,
-                // with error details in the JSON payload.
-                // We only throw for true network/HTTP protocol errors.
+                // Remove the "Typing..." message after response
+                if (typingMessageElement && typingMessageElement.parentNode) {
+                    typingMessageElement.parentNode.removeChild(typingMessageElement);
+                }
+
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
                 }
 
                 const data = await response.json();
 
                 if (data.error) {
-                    displayMessage(`Error: ${data.error}`, 'bot');
-                    chatStatusDiv.textContent = `Error: ${data.error}`; // Display specific error from backend
-                    chatStatusDiv.style.color = 'red';
+                    appendMessage(`Error: ${data.error}`, 'bot-message', 'error'); // Corrected
+                    displayChatStatus(`Error: ${data.error}`, 'error');
                 } else {
-                    displayMessage(data.answer, 'bot');
-                    chatStatusDiv.textContent = ''; // Clear status on success
+                    appendMessage(data.answer, 'bot-message');
+                    displayChatStatus('Message sent successfully!', 'success');
+                    if (data.session_id && !sessionId) {
+                        sessionId = data.session_id;
+                        console.log('New session ID:', sessionId);
+                    }
                 }
-                sessionId = data.session_id; // Update session ID in case it was new
-                localStorage.setItem('sessionId', sessionId);
-
             } catch (error) {
-                console.error('Fetch error:', error);
-                displayMessage("Error: Could not connect to the assistant. Please check your network or server status.", 'bot');
-                chatStatusDiv.textContent = "Error: Could not connect to the assistant.";
-                chatStatusDiv.style.color = 'red';
+                console.error('Error sending message:', error);
+                // Remove the "Typing..." message if an error occurs
+                if (typingMessageElement && typingMessageElement.parentNode) {
+                    typingMessageElement.parentNode.removeChild(typingMessageElement);
+                }
+                appendMessage('Sorry, I am unable to connect to the agent right now. Please try again later.', 'bot-message', 'error'); // Corrected
+                displayChatStatus(`Network error: ${error.message}. Please check console for details.`, 'error');
             } finally {
-                sendButton.disabled = false;
+                chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom again
             }
         }
 
+        function appendMessage(text, ...classNames) { // <--- Changed to accept multiple class names
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', ...classNames); // <--- Use spread operator to add all
+            messageElement.textContent = text;
+            chatWindow.appendChild(messageElement);
+            chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll to the latest message
+            return messageElement; // Return the created element
+        }
+
+        function displayChatStatus(message, type) {
+            chatStatusMessage.textContent = message;
+            chatStatusMessage.className = `status-message ${type}`; // Reset classes
+            chatStatusMessage.style.display = 'block'; // Show status
+        }
+
+        function displayUploadStatus(message, type) {
+            uploadStatusMessage.textContent = message;
+            uploadStatusMessage.className = `status-message ${type}`; // Reset classes
+            uploadStatusMessage.style.display = 'block'; // Show status
+        }
+
+
         // --- Document Upload Logic ---
-        uploadButton.addEventListener('click', uploadDocument);
+
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false); // Prevent default for whole body too
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Highlight drop area when dragging over
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight() {
+            dropArea.classList.add('dragover');
+        }
+
+        function unhighlight() {
+            dropArea.classList.remove('dragover');
+        }
+
+        // Handle dropped files
+        dropArea.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        // Handle click on drop area to trigger file input
+        dropArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // Handle file selection from input
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            if (files.length > 0) {
+                selectedFile = files[0];
+                selectedFileNameSpan.textContent = `Selected: ${selectedFile.name}`;
+                selectedFileNameSpan.style.display = 'block'; // Show file name
+                displayUploadStatus('', ''); // Clear previous status
+                uploadButton.disabled = false; // Enable upload button
+            } else {
+                selectedFile = null;
+                selectedFileNameSpan.textContent = '';
+                selectedFileNameSpan.style.display = 'none';
+                uploadButton.disabled = true; // Disable upload button
+                displayUploadStatus('No file selected.', 'error');
+            }
+        }
 
         async function uploadDocument() {
-            const file = fileInput.files[0];
-            if (!file) {
-                uploadStatusDiv.textContent = 'Please select a file to upload.';
-                uploadStatusDiv.className = 'uploadStatus warning';
+            if (!selectedFile) {
+                displayUploadStatus('Please select a file first.', 'error');
                 return;
             }
 
-            uploadStatusDiv.textContent = 'Uploading...';
-            uploadStatusDiv.className = ''; // Clear previous status class
-            uploadButton.disabled = true;
+            displayUploadStatus(`Uploading "${selectedFile.name}"...`, 'info');
+            uploadButton.disabled = true; // Disable button during upload
 
             const formData = new FormData();
-            formData.append('file', file);
+            formData.append('file', selectedFile);
 
             try {
                 const response = await fetch('/api/documents/upload', {
                     method: 'POST',
-                    body: formData // FormData sets 'Content-Type': 'multipart/form-data' automatically
+                    body: formData,
                 });
 
-                const data = await response.json();
-
-                if (data.status === 'success') {
-                    uploadStatusDiv.textContent = data.message;
-                    uploadStatusDiv.className = 'uploadStatus success';
-                    fileInput.value = ''; // Clear the file input
-                } else if (data.status === 'warning') {
-                     uploadStatusDiv.textContent = data.message;
-                     uploadStatusDiv.className = 'uploadStatus warning';
-                     fileInput.value = ''; // Clear the file input even if it was a warning
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.message || response.statusText}`);
                 }
-                else {
-                    uploadStatusDiv.textContent = `Upload Error: ${data.message || 'An unknown error occurred.'}`;
-                    uploadStatusDiv.className = 'uploadStatus error';
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    displayUploadStatus(data.message, 'success');
+                } else {
+                    displayUploadStatus(`Upload failed: ${data.message}`, 'error');
                 }
             } catch (error) {
-                console.error('Upload fetch error:', error);
-                uploadStatusDiv.textContent = 'Network error: Could not connect to the server.';
-                uploadStatusDiv.className = 'uploadStatus error';
+                console.error('Error uploading document:', error);
+                displayUploadStatus(`Upload failed: ${error.message}. Please check console for details.`, 'error');
             } finally {
-                uploadButton.disabled = false;
+                selectedFile = null; // Clear selected file
+                selectedFileNameSpan.textContent = '';
+                selectedFileNameSpan.style.display = 'none';
+                uploadButton.disabled = false; // Re-enable button
             }
         }
+
+        // Initial state: disable upload button until a file is selected
+        uploadButton.disabled = true;
+
     </script>
 </body>
 </html>
