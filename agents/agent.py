@@ -1,12 +1,11 @@
 # First, ensure you have the necessary libraries installed.
-# You can install them by running the following in your terminal:
-# pip install Flask langchain chromadb pypdf sentence-transformers langchain-community langchain-huggingface langchain-chroma Flask-CORS unstructured[pdf,docx,csv,pptx] python-magic python-docx openpyxl
+# You can run 'pip install -r requirements.txt' where requirements.txt is provided.
 
 """
 This script implements a Retrieval-Augmented Generation (RAG) assistant
 using Flask for the API, LangChain for orchestration, and various
 libraries for document processing and LLM interaction. It supports
-both local (Ollama) and cloud (Google Gemini) LLM modes.
+both local (Ollama) and cloud (Google Gemini) LLM mode.
 """
 
 # --- IMPORTANT: Patch sqlite3 for ChromaDB compatibility ---
@@ -25,6 +24,7 @@ import logging
 import json
 import requests
 import google.generativeai as genai
+from werkzeug.utils import secure_filename # For secure file naming
 
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify, render_template
@@ -33,7 +33,11 @@ from flask_cors import CORS
 # --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
+from langchain_community.document_loaders import DirectoryLoader
+# Temporarily alias UnstructuredFileLoader from langchain_community
+# The deprecation warning indicates this should move to 'langchain-unstructured' package
+from langchain_community.document_loaders import UnstructuredFileLoader as LangChainUnstructuredFileLoader
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -47,13 +51,11 @@ from langchain_core.documents import Document
 # Imports for LangChain Agents and Tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
-from abc import ABC, abstractmethod # <--- ADD THIS LINE
 
 # --- NEW: Imports for Reranking ---
 from sentence_transformers import CrossEncoder # For reranking
 from langchain.retrievers import ContextualCompressionRetriever
-# Removed: from langchain_community.document_compressors import BaseDocumentCompressor # No longer needed directly
-from abc import ABC, abstractmethod # <--- Ensure this is ADDED or present
+from langchain.retrievers.document_compressors.base import BaseDocumentCompressor # <--- NEW IMPORT
 
 # --- NEW: Import ingestion utilities ---
 import ingestion_utils # Import the new file
@@ -69,11 +71,19 @@ logger = logging.getLogger(__name__)
 # --- Global variables for the Flask App ---
 llm = None
 retriever = None
-agent_executors = {} 
+agent_executors = {}
+db = None # Make db a global variable so it can be accessed for updates
 
 # --- Flask App Instance ---
 app = Flask(__name__)
 CORS(app)
+
+# --- Define allowed extensions for uploads ---
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'csv', 'xlsx', 'pptx'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- Tool Definitions ---
 def get_current_weather(location: str) -> str:
@@ -168,17 +178,21 @@ def get_current_weather(location: str) -> str:
                 continue # Try next attempt if data is incomplete
 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"API call failed for '{query_identifier}': {e}. Trying next option if available.")
+            logger.warning(f"OpenWeatherMap API call failed for '{query_identifier}': {e}. Trying next option if available.")
             continue # Try next attempt on API error
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON decoding failed for '{query_identifier}': {e}. Trying next option if available.")
+            logger.warning(f"JSON decoding failed for '{query_identifier}' from OpenWeatherMap: {e}. Trying next option if available.")
             continue # Try next attempt on JSON error
         except Exception as e:
-            logger.error(f"Unexpected error in get_current_weather for '{query_identifier}': {e}. Trying next option if available.")
+            logger.error(f"Unexpected error in get_current_weather tool for '{query_identifier}': {e}. Trying next option if available.")
             continue # Try next attempt on unexpected error
 
     # If all attempts fail, return a consolidated and actionable error message for the LLM
-    return f"I couldn't retrieve weather data for '{location}' after several attempts. This could be due to an invalid location, incorrect spelling, or the location being too ambiguous. Please try again with a more precise location, like a zip code (e.g., '90210') or a city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
+    return (
+        f"I was unable to retrieve weather data for '{location}' using the weather tool. "
+        f"This could be due to an invalid or ambiguous location, or a temporary issue with the weather service. "
+        f"Please try again with a more precise location, such as a zip code (e.g., '90210') or a city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR')."
+    )
 
 # Define the weather tool (this can be global as it doesn't need session-specific state)
 weather_tool = Tool(
@@ -187,11 +201,57 @@ weather_tool = Tool(
     description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
 )
 
+# --- CrossEncoderCompressor Class (MOVED TO GLOBAL SCOPE AND NOW IMPLEMENTS abstract method) ---
+class CrossEncoderCompressor(BaseDocumentCompressor): # Inherit from BaseDocumentCompressor
+    # Use a private variable _model and a public property model
+    # This is sometimes necessary if the parent class has its own 'model' property
+    # that might interfere, or if you need to do lazy loading/validation.
+    _model: CrossEncoder = None # Initialize with None
+    top_n: int = 3 # Can be a Pydantic field
+
+    def __init__(self, model: CrossEncoder, top_n: int = 3, **kwargs):
+        super().__init__(**kwargs) # Call parent constructor first
+        self._model = model # Assign to the private variable
+        self.top_n = top_n
+        logger.info(f"CrossEncoderCompressor initialized with top_n={self.top_n}")
+
+    @property
+    def model(self) -> CrossEncoder:
+        # This property ensures the model is always accessible via .model
+        # and can include lazy loading if needed, though here it's direct.
+        return self._model
+
+    # This is the concrete implementation of the abstract method from BaseDocumentCompressor
+    def compress_documents(
+        self, documents: list[Document], query: str, callbacks=None
+    ) -> list[Document]:
+        if not documents:
+            return []
+        
+        passages = [doc.page_content for doc in documents]
+        sentence_pairs = [[query, passage] for passage in passages]
+        
+        # Access model via the property to ensure it's loaded and available
+        if self.model is None: # Check if model is None (should ideally not happen if initialized correctly)
+            logger.error("CrossEncoder model is not initialized in compressor. Skipping reranking.")
+            return documents # Return original documents if model is missing
+
+        scores = self.model.predict(sentence_pairs)
+        
+        scored_documents = sorted(
+            zip(scores, documents), key=lambda x: x[0], reverse=True
+        )
+        
+        compressed_documents = [doc for score, doc in scored_documents[:self.top_n]]
+        logger.debug(f"Reranked {len(documents)} documents to top {len(compressed_documents)} for query: '{query}'")
+        return compressed_documents
+
 
 # --- Function to check available Gemini models (Optional, useful for initial setup) ---
 def check_gemini_models():
     """
     Checks and logs available Gemini models if GOOGLE_API_KEY is set.
+    It specifically checks for the configured model and logs available ones if not found.
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -201,16 +261,36 @@ def check_gemini_models():
     genai.configure(api_key=api_key)
     
     logger.info("--- Checking available Gemini models ---")
-    available_models = []
+    available_model_names = []
     try:
-        for m in genai.list_models():
+        # Get all models that support generateContent
+        all_listed_models = list(genai.list_models())
+        for m in all_listed_models:
             if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        logger.info("--- End of available models ---")
+                available_model_names.append(m.name)
+        
+        configured_model = config.GEMINI_MODEL_TO_USE
+
+        if configured_model in available_model_names:
+            logger.info(f"Configured Gemini model '{configured_model}' is available and ready for use.")
+        else:
+            logger.error(f"Configured Gemini model '{configured_model}' is NOT available for your API key.")
+            logger.error("Please ensure the model name is correct, the Gemini API is enabled in your Google Cloud Project,")
+            logger.error("and your API key has the necessary permissions.")
+            logger.info("--- Full list of available Gemini models supporting 'generateContent' ---")
+            if not available_model_names:
+                logger.info("No models supporting 'generateContent' were found at all with the provided API key.")
+            else:
+                for model_name in sorted(available_model_names): # Sort for readability
+                    logger.info(f"  - {model_name}")
+            logger.info("--- End of available models list ---")
+        
+        logger.info(f"--- End of available models check ---")
+
     except Exception as e:
         logger.error(f"Error listing models: {e}")
-        logger.error("Please double-check your GOOGLE_API_KEY and internet connection if using Gemini.")
-    return available_models
+        logger.error("Please double-check your GOOGLE_API_KEY, internet connection, and API enablement if using Gemini.")
+    return available_model_names
 
 
 # --- Function to initialize the RAG components ---
@@ -222,28 +302,44 @@ def initialize_rag_components(model_mode: str):
     Args:
         model_mode (str): The mode for the language model ('local' for Ollama, 'cloud' for Gemini).
     """
-    global llm, retriever
+    global llm, retriever, db # Added db to global
 
-    # --- 1. Load Documents from Various Types (Local files and Web) ---
+    # Ensure the document storage directory exists. This is crucial for the app to start.
+    try:
+        os.makedirs(config.DOCUMENT_STORAGE_DIRECTORY, exist_ok=True)
+        logger.info(f"Ensured document storage directory exists: {config.DOCUMENT_STORAGE_DIRECTORY}")
+    except OSError as e:
+        logger.error(f"Failed to create document storage directory '{config.DOCUMENT_STORAGE_DIRECTORY}': {e}")
+        logger.error("Application cannot proceed without a writable document storage directory.")
+        sys.exit(1) # Critical error, cannot continue if directory can't be created
+
     all_documents = []
 
-    # Load local documents
-    logger.info(f"Loading local documents from: {config.DOCUMENT_STORAGE_DIRECTORY} (supporting multiple file types via UnstructuredFileLoader)")
-    try:
-        local_loader = DirectoryLoader(
-            config.DOCUMENT_STORAGE_DIRECTORY,
-            loader_cls=UnstructuredFileLoader,
-            recursive=True,
-            show_progress=True,
-        )
-        local_documents = local_loader.load()
-        all_documents.extend(local_documents)
-        logger.info(f"Loaded {len(local_documents)} local document(s).")
-    except Exception as e:
-        logger.exception(f"Detailed error during local document loading: {e}")
-        logger.error(f"Error loading local documents: {e}")
-        logger.error(f"Please ensure the directory '{config.DOCUMENT_STORAGE_DIRECTORY}' exists and contains document files.")
-        sys.exit(1)
+    # --- 1. Load Documents from Various Types (Local files and Web) ---
+    logger.info(f"Attempting to load local documents from: {config.DOCUMENT_STORAGE_DIRECTORY}")
+    
+    # Check if the directory is actually a directory before passing to DirectoryLoader
+    if not os.path.isdir(config.DOCUMENT_STORAGE_DIRECTORY):
+        logger.error(f"'{config.DOCUMENT_STORAGE_DIRECTORY}' is not a valid directory. Skipping local document loading.")
+        local_documents = [] # Treat as no documents loaded
+    else:
+        try:
+            local_loader = DirectoryLoader(
+                config.DOCUMENT_STORAGE_DIRECTORY,
+                loader_cls=LangChainUnstructuredFileLoader, # Use the aliased class
+                recursive=True,
+                show_progress=True,
+            )
+            local_documents = local_loader.load()
+            logger.info(f"Loaded {len(local_documents)} local document(s).")
+        except Exception as e:
+            # Catch errors during loading, but don't crash the app.
+            # This handles cases where the directory exists but files inside are problematic.
+            logger.exception(f"Detailed error during local document loading from '{config.DOCUMENT_STORAGE_DIRECTORY}': {e}")
+            logger.error("Error loading local documents. Application will proceed without them.")
+            local_documents = [] # Ensure it's an empty list if loading fails
+
+    all_documents.extend(local_documents)
 
     # Load web documents from web.conf via deep scraping
     # Set the ingestion config for user agent, scrape delay, and max documents
@@ -266,11 +362,13 @@ def initialize_rag_components(model_mode: str):
     logger.info("Creating embeddings and storing in ChromaDB...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
+    # If no documents are loaded, ChromaDB can still be initialized as an empty DB.
+    # This prevents errors if 'texts' is empty.
     if os.path.exists(config.CHROMA_DB_DIRECTORY) and os.listdir(config.CHROMA_DB_DIRECTORY):
         logger.info("Loading existing ChromaDB vector store...")
         db = Chroma(persist_directory=config.CHROMA_DB_DIRECTORY, embedding_function=embeddings, collection_name=config.COLLECTION_NAME)
-    else:
-        logger.info("Creating new ChromaDB vector store...")
+    elif texts: # Only create from documents if there are actual texts
+        logger.info("Creating new ChromaDB vector store from loaded documents...")
         db = Chroma.from_documents(
             texts,
             embeddings,
@@ -278,6 +376,12 @@ def initialize_rag_components(model_mode: str):
             collection_name=config.COLLECTION_NAME
         )
         logger.info("ChromaDB vector store created and persisted.")
+    else: # If no existing DB and no texts to load, create an empty ChromaDB
+        logger.info("No existing ChromaDB and no documents to load. Initializing an empty ChromaDB vector store.")
+        # Create a ChromaDB instance, possibly with a dummy document or by instantiating collection directly
+        db = Chroma(embedding_function=embeddings, persist_directory=config.CHROMA_DB_DIRECTORY, collection_name=config.COLLECTION_NAME)
+        logger.info("Empty ChromaDB vector store initialized.")
+
 
     # --- 4. Set up the Language Model (Conditional based on mode) ---
     if model_mode == "local":
@@ -301,51 +405,25 @@ def initialize_rag_components(model_mode: str):
     # Initialize the reranker model
     logger.info(f"Loading reranker model: {config.RERANKER_MODEL_NAME}...")
     try:
+        # The CrossEncoder model itself should be initialized, not the string name
         reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
-        # Wrap the CrossEncoder in a custom compressor, inheriting from ABC
-        class CrossEncoderCompressor(ABC): # CHANGE THIS LINE (1/2)
-            def __init__(self, model: CrossEncoder, top_n: int = 3):
-                self.model = model
-                self.top_n = top_n
-                logger.info(f"CrossEncoderCompressor initialized with top_n={top_n}")
-
-            # Remove @abstractmethod here, as you are providing the concrete implementation
-            def _compress_documents(
-                self, documents: list[Document], query: str, callbacks=None
-            ) -> list[Document]:
-                if not documents:
-                    return []
-                
-                # Prepare passages for reranking
-                passages = [doc.page_content for doc in documents]
-                
-                # Generate scores
-                # The model expects a list of [query, passage] pairs
-                sentence_pairs = [[query, passage] for passage in passages]
-                scores = self.model.predict(sentence_pairs)
-                
-                # Sort documents based on scores in descending order
-                # Use a tuple for sorting (score, original_index) to maintain tie-breaking consistency
-                # and to easily map back to original documents
-                scored_documents = sorted(
-                    zip(scores, documents), key=lambda x: x[0], reverse=True
-                )
-                
-                # Select top N documents
-                compressed_documents = [doc for score, doc in scored_documents[:self.top_n]]
-                logger.debug(f"Reranked {len(documents)} documents to top {len(compressed_documents)} for query: '{query}'")
-                return compressed_documents
+        logger.info(f"CrossEncoder model '{config.RERANKER_MODEL_NAME}' loaded successfully.") # Added log
         
-        compressor = CrossEncoderCompressor(reranker_model, top_n=config.RERANKER_TOP_K)
-        retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=base_retriever
-        )
-        logger.info("ContextualCompressionRetriever with Reranker initialized.")
+        # Only initialize compressor if reranker_model loaded successfully and is not None
+        if reranker_model:
+            compressor = CrossEncoderCompressor(model=reranker_model, top_n=config.RERANKER_TOP_K)
+            retriever = ContextualCompressionRetriever(
+                base_compressor=compressor, base_retriever=base_retriever
+            )
+            logger.info("ContextualCompressionRetriever with Reranker initialized.")
+        else:
+            logger.warning("Reranker model failed to load (returned None). Proceeding without reranking.")
+            retriever = base_retriever # Fallback to base retriever if reranker model is None
 
     except Exception as e:
-        logger.error(f"Error loading or initializing reranker model '{config.RERANKER_MODEL_NAME}': {e}")
+        logger.error(f"Error loading or initializing reranker model '{config.RERANKER_MODEL_NAME}': {e}", exc_info=True) # exc_info=True for full traceback
         logger.error("Proceeding without reranking. Retrieval quality might be lower.")
-        retriever = base_retriever # Fallback to base retriever if reranker fails
+        retriever = base_retriever # Fallback to base retriever if any error occurs
         
     logger.info("\nRAG components initialized.")
 
@@ -356,6 +434,86 @@ def index():
     """Renders the main index page for the web UI."""
     return render_template('index.html')
 
+# --- API Endpoint for Document Upload ---
+@app.route('/api/documents/upload', methods=['POST'])
+def upload_document():
+    """
+    Handles document uploads, processes them, and updates the ChromaDB vector store.
+    """
+    global db, retriever # Need to access and potentially re-initialize retriever if db changes
+
+    if 'file' not in request.files:
+        return jsonify({"status": "error", "message": "No file part in the request."}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "No selected file."}), 400
+    
+    if file and allowed_file(file.filename):
+        try:
+            filename = secure_filename(file.filename)
+            upload_path = os.path.join(config.DOCUMENT_STORAGE_DIRECTORY, filename)
+            
+            # Ensure the directory exists before saving the file
+            os.makedirs(config.DOCUMENT_STORAGE_DIRECTORY, exist_ok=True)
+            
+            file.save(upload_path)
+            logger.info(f"File '{filename}' saved to '{upload_path}'.")
+
+            # --- Process the new document and update ChromaDB ---
+            logger.info(f"Processing uploaded document: '{filename}'...")
+            loader = LangChainUnstructuredFileLoader(upload_path) # Using the aliased class
+            new_documents = loader.load()
+            
+            if not new_documents:
+                logger.warning(f"No content extracted from uploaded file: '{filename}'.")
+                os.remove(upload_path) # Clean up empty file
+                return jsonify({"status": "warning", "message": f"File '{filename}' uploaded but no text content could be extracted. It was not added to the knowledge base."}), 200
+
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            new_texts = text_splitter.split_documents(new_documents)
+            logger.info(f"Split uploaded document into {len(new_texts)} chunks.")
+
+            if db:
+                # Add new documents to the existing ChromaDB collection
+                db.add_documents(new_texts)
+                logger.info(f"Added {len(new_texts)} chunks from '{filename}' to existing ChromaDB.")
+            else:
+                # If db was not initialized for some reason, re-initialize with the new docs
+                logger.warning("ChromaDB not initialized, re-initializing with new documents.")
+                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                db = Chroma.from_documents(
+                    new_texts,
+                    embeddings,
+                    persist_directory=config.CHROMA_DB_DIRECTORY,
+                    collection_name=config.COLLECTION_NAME
+                )
+                # Re-initialize retriever if db object changed
+                base_retriever = db.as_retriever(search_kwargs={"k": config.RETRIEVER_SEARCH_K})
+                try: # Re-add reranking if it was active
+                    reranker_model = CrossEncoder(config.RERANKER_MODEL_NAME)
+                    # Use globally defined class, now correctly implementing abstract method
+                    compressor = CrossEncoderCompressor(model=reranker_model, top_n=config.RERANKER_TOP_K)
+                    retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_retriever)
+                except Exception as e:
+                    logger.error(f"Could not re-initialize reranker after DB re-initialization: {e}")
+                    retriever = base_retriever # Fallback
+
+            # Clear existing agent executors so they pick up the new retriever on next session
+            agent_executors.clear()
+            logger.info("Cleared existing agent sessions. New sessions will use updated knowledge base.")
+
+            return jsonify({"status": "success", "message": f"File '{filename}' processed and added to knowledge base. Knowledge base updated successfully."}), 200
+        except Exception as e:
+            logger.exception(f"Error processing uploaded file '{file.filename}': {e}")
+            # Attempt to clean up the partially processed file if an error occurs
+            if 'upload_path' in locals() and os.path.exists(upload_path):
+                os.remove(upload_path)
+                logger.info(f"Cleaned up partially processed file: '{filename}'.")
+            return jsonify({"status": "error", "message": f"Failed to process file '{file.filename}': An internal error occurred. See server logs for details."}), 500
+    else:
+        return jsonify({"status": "error", "message": "Invalid file type. Allowed types are: " + ', '.join(ALLOWED_EXTENSIONS)}), 400
 
 # --- API Endpoint for Chat (for external systems / programmatic access) ---
 @app.route('/api/bot', methods=['POST'])
@@ -396,6 +554,12 @@ def api_bot():
             ("user", "{input}"),
             ("user", "Standalone question:"),
         ])
+        # IMPORTANT: Ensure 'retriever' is globally initialized and valid here
+        if retriever is None:
+            logger.error("RAG retriever is not initialized. Cannot create agent executor.")
+            # Do not return 500, return 200 with an error message in body
+            return jsonify({"error": "RAG system not fully initialized. Please wait or check server logs."}), 200
+
         retrieval_chain = create_history_aware_retriever(llm, retriever, history_aware_retriever_prompt)
         
         document_qa_prompt = ChatPromptTemplate.from_messages([
@@ -433,7 +597,7 @@ def api_bot():
                 return result.get('answer', 'No answer found from documents.')
             except Exception as e:
                 logger.error(f"Error in document_qa_retriever tool for query '{query}': {e}")
-                return f"Error retrieving document answer: {e}"
+                return f"Error retrieving document answer: An issue occurred while processing the document context."
 
         # 3. Define the tools the agent can use
         tools = [
@@ -446,7 +610,6 @@ def api_bot():
         ]
         
         # 4. Create the Agent
-        # --- MODIFIED AGENT PROMPT ---
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
             
@@ -497,8 +660,34 @@ def api_bot():
         logger.info(f"Session {session_id}: Q: '{question}' A: '{answer}'")
         return jsonify({"answer": answer, "session_id": session_id}), 200
     except Exception as e:
-        logger.exception(f"An error occurred during chat for session {session_id} with question '{question}':")
-        return jsonify({"error": "An internal error occurred while processing your request.", "details": str(e)}), 500
+        # Catch specific Google API errors for better user feedback
+        from google.api_core import exceptions as google_exceptions # <--- Moved import here for consistency
+
+        if isinstance(e, google_exceptions.InternalServerError) or (
+            hasattr(e, 'args') and len(e.args) > 0 and 'InternalServerError' in str(e.args[0])
+        ):
+            user_message = (
+                "I'm sorry, I encountered a temporary issue with the AI service while processing your request (Google API Internal Error). "
+                "Please try again in a moment, or rephrase your question."
+            )
+            logger.error(f"Google Gemini InternalServerError for session {session_id} with question '{question}': {e}")
+            return jsonify({"error": user_message, "details": str(e)}), 200 # Changed to 200
+        elif isinstance(e, requests.exceptions.RequestException):
+            user_message = (
+                "I'm experiencing network issues and cannot connect to external services (like weather). "
+                "Please check your internet connection and try again."
+            )
+            logger.error(f"Network/API connection error for session {session_id} with question '{question}': {e}")
+            return jsonify({"error": user_message, "details": str(e)}), 200 # Changed to 200
+        else:
+            # For any other unexpected errors
+            logger.exception(f"An unexpected error occurred during chat for session {session_id} with question '{question}':")
+            user_message = (
+                "I'm sorry, an unexpected error occurred while processing your request. "
+                "Please try again or contact support if the issue persists."
+            )
+            return jsonify({"error": user_message, "details": str(e)}), 200 # Changed to 200
+
 
 # --- Health Check Endpoint (Optional but Recommended) ---
 @app.route('/health', methods=['GET'])
