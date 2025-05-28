@@ -35,21 +35,21 @@
             padding: 25px;
             box-sizing: border-box;
             background-color: #fff;
+            display: flex; /* Ensure flex for internal layout */
+            flex-direction: column; /* Stack children vertically */
         }
 
         .chat-section {
             flex: 2; /* Chat takes more space */
             border-right: 1px solid #eee;
-            display: flex;
-            flex-direction: column;
             min-height: 600px; /* Minimum height for chat */
+            height: 600px; /* Fixed height for consistency */
         }
 
         .document-section {
             flex: 1; /* Document upload takes less space */
             min-height: 600px; /* Match chat section height */
-            display: flex;
-            flex-direction: column;
+            height: 600px; /* Fixed height for consistency */
         }
 
         h1, h2 {
@@ -65,7 +65,7 @@
             border-radius: 8px;
             padding: 15px;
             margin-bottom: 15px;
-            overflow-y: auto;
+            overflow-y: auto; /* <--- KEY CHANGE: Makes it scrollable vertically */
             background-color: #fdfdfd;
             display: flex;
             flex-direction: column; /* Ensure messages stack vertically */
@@ -179,6 +179,9 @@
             transition: border-color 0.3s ease, background-color 0.3s ease;
             margin-bottom: 15px; /* Space before button */
             background-color: #f8f8f8;
+            /* New: Ensure this area doesn't expand indefinitely if content is added */
+            overflow-y: auto; /* <--- KEY CHANGE: Makes it scrollable vertically */
+            max-height: calc(100% - 120px); /* Adjust based on h2, span, button heights */
         }
 
         .document-upload-area:hover,
@@ -222,6 +225,7 @@
             font-size: 1.1rem;
             transition: background-color 0.2s, transform 0.1s;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-top: auto; /* Push button to the bottom of the section */
         }
 
         #uploadDocumentButton:hover {
@@ -248,12 +252,11 @@
                 border-right: none;
                 border-bottom: 1px solid #eee; /* Add separator when stacked */
                 padding: 15px;
+                height: auto; /* Allow height to adjust on small screens */
+                min-height: 400px; /* Keep minimum height */
             }
-            .chat-section {
-                min-height: 400px;
-            }
-            .document-section {
-                min-height: auto; /* Allow height to adjust */
+            .document-section .document-upload-area {
+                max-height: 300px; /* Provide a max-height on smaller screens */
             }
             .input-area input[type="text"], .input-area button,
             #uploadDocumentButton {
@@ -323,8 +326,8 @@
             userInput.value = ''; // Clear input
 
             // Display "Typing..." message
-            // Fix: Pass classes as separate arguments to classList.add()
-            const typingMessageElement = appendMessage('Agent is typing...', 'bot-message', 'info-message'); // Corrected
+            // Correct: Pass classes as separate arguments to appendMessage
+            const typingMessageElement = appendMessage('Agent is typing...', 'bot-message', 'info-message');
             chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom
 
             displayChatStatus('Sending message...', 'info');
@@ -374,9 +377,10 @@
             }
         }
 
-        function appendMessage(text, ...classNames) { // <--- Changed to accept multiple class names
+        // Modified appendMessage to accept multiple class names
+        function appendMessage(text, ...classNames) { // Use rest parameter for class names
             const messageElement = document.createElement('div');
-            messageElement.classList.add('message', ...classNames); // <--- Use spread operator to add all
+            messageElement.classList.add('message', ...classNames); // Use spread operator to add all class names
             messageElement.textContent = text;
             chatWindow.appendChild(messageElement);
             chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll to the latest message
