@@ -5,7 +5,7 @@ __pycache__/
 *.so
 
 # Virtual environment directory
-venv/
+venv*/
 .venv/
 env/
 .env/
@@ -49,3 +49,4 @@ htmlcov/
 *.log.txt
 *.tmp
 *.bak
+*uninstall.txt

@@ -26,6 +26,8 @@ import requests
 import google.generativeai as genai
 from werkzeug.utils import secure_filename # For secure file naming
 import time # For exponential backoff in Google Search Tool
+from datetime import datetime # For web scraping metadata
+import yaml # To load OpenAPI spec files
 
 # --- Flask and related imports ---
 from flask import Flask, request, jsonify, render_template
@@ -38,6 +40,8 @@ from langchain_community.document_loaders import DirectoryLoader
 # Temporarily alias UnstructuredFileLoader from langchain_community
 # The deprecation warning indicates this should move to 'langchain-unstructured' package
 from langchain_community.document_loaders import UnstructuredFileLoader as LangChainUnstructuredFileLoader
+from langchain_community.document_loaders import WebBaseLoader # For basic web loading in ingestion_utils
+from langchain_community.document_loaders import UnstructuredURLLoader # For more robust URL loading in ingestion_utils
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
@@ -52,6 +56,12 @@ from langchain_core.documents import Document
 # Imports for LangChain Agents and Tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
+# --- NEW: Correct Imports for OpenAPI Tool Integration for LangChain 0.3.x ---
+# This is the officially supported way to get OpenAPI tools via toolkit in LangChain 0.3.x
+from langchain_community.utilities.openapi import OpenAPISpec
+from langchain_community.tools.requests.tool import RequestsWrapper
+from langchain_community.agent_toolkits.openapi.toolkit import OpenAPIRequestToolkit
+
 
 # --- NEW: Imports for Google Search Tool ---
 from langchain_google_community import GoogleSearchAPIWrapper
@@ -62,7 +72,7 @@ from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors.base import BaseDocumentCompressor
 
 # --- NEW: Import ingestion utilities ---
-import ingestion_utils # Import the new file
+import ingestion_utils 
 
 # --- Application Configuration ---
 import config
@@ -72,7 +82,7 @@ logging.basicConfig(level=getattr(logging, config.LOG_LEVEL),
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Global variables for the Flask App ---
+# --- Global variables for the Flask App --
 llm = None
 retriever = None
 agent_executors = {}
@@ -145,13 +155,6 @@ def get_current_weather(location: str) -> str:
             unique_attempts.append(d)
             seen.add(t)
 
-    # Specific workaround for known tricky locations if LLM still passes them
-    lower_location = location.lower()
-    if "ashburn" in lower_location and "nc" in lower_location:
-        # If the LLM insists on Ashburn, NC, let's explicitly try Ashburn, VA as a common correction
-        if {"q": "Ashburn,VA"} not in unique_attempts:
-            unique_attempts.insert(0, {"q": "Ashburn,VA"}) # Try VA first for Ashburn issues
-
     final_attempts = unique_attempts
     
     for attempt_params in final_attempts:
@@ -205,11 +208,11 @@ weather_tool = Tool(
     description="Useful for fetching current weather conditions for a specified location. Input must be a single string representing the location, such as a zip code (e.g., '90210'), a precise city name (e.g., 'London'), or a combination of city and state/country (e.g., 'Ashburn, VA' or 'Paris, FR'). The tool will try its best to resolve the location given."
 )
 
-# --- NEW: Google Search Tool Definition ---
+# --- Google Search Tool Definition ---
 # Initialize Google Search API Wrapper
 # It picks up GOOGLE_API_KEY and GOOGLE_CSE_ID from environment variables
 try:
-    Google_Search_wrapper = GoogleSearchAPIWrapper() # Corrected variable name
+    Google_Search_wrapper = GoogleSearchAPIWrapper()
     logger.info("GoogleSearchAPIWrapper initialized.")
 except Exception as e:
     logger.error(f"Failed to initialize GoogleSearchAPIWrapper: {e}")
@@ -675,6 +678,52 @@ def api_bot():
             ),
         ]
         
+        # --- GitHub API Tool Definition using OpenAPI Toolkit ---
+        # Path to the OpenAPI spec file inside the Docker container
+        GITHUB_API_SPEC_PATH = "/app/data/api.github.com.yaml"  
+
+        try:
+            logger.info(f"Attempting to load GitHub OpenAPI spec from: {GITHUB_API_SPEC_PATH}")
+
+            # Load the OpenAPI spec content
+            with open(GITHUB_API_SPEC_PATH, 'r') as f:
+                github_openapi_spec_content = yaml.safe_load(f) # Use yaml.safe_load for YAML files
+
+            # Create the OpenAPI spec object
+            github_spec = OpenAPISpec(github_openapi_spec_content)
+
+            # Prepare headers for authentication. Pass GITHUB_PAT if available.
+            github_pat = os.getenv("GITHUB_PAT")
+            headers = {}
+            if github_pat:
+                headers["Authorization"] = f"Bearer {github_pat}" # GitHub uses Bearer token for PATs
+                headers["Accept"] = "application/vnd.github.v3+json" # Recommended for GitHub API
+                logger.info("GitHub PAT found. Will use for authentication with OpenAPI tools.")
+            else:
+                logger.warning("GITHUB_PAT environment variable not set. Access to private GitHub repos/PRs may be limited when using OpenAPI tools.")
+
+            # Create a RequestsWrapper with custom headers
+            requests_wrapper = RequestsWrapper(headers=headers)
+
+            # Create the OpenAPI Toolkit from the spec and the requests wrapper
+            openapi_toolkit = OpenAPIRequestToolkit.from_openapi_spec(
+                github_spec, requests_wrapper
+            )
+            
+            # Get the dynamically generated tools from the toolkit
+            github_openapi_tools = openapi_toolkit.get_tools()
+            
+            # Extend the main tools list with the dynamically generated GitHub tools
+            tools.extend(github_openapi_tools) 
+            logger.info(f"GitHub API tools initialized successfully from OpenAPI spec. Added {len(github_openapi_tools)} GitHub operations as tools.")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize GitHub API tools from OpenAPI spec: {e}", exc_info=True)
+            logger.error(f"Please ensure '{GITHUB_API_SPEC_PATH}' exists, is a valid YAML/JSON, and is accessible. "
+                         "Also, check if all required LangChain packages are installed.")
+            # Do not add github_tools to tools list if it failed to initialize
+
+
         # 4. Create the Agent
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful and versatile AI assistant. Your primary goal is to answer questions accurately and directly.
@@ -682,6 +731,12 @@ def api_bot():
             **Tool Usage Priority and Guidelines:**
             - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your uploaded documents AND the pre-scraped web content. This is your primary source for internal knowledge.
             - **Google Search:** Use `Google Search` for general knowledge questions, current events, or anything that requires up-to-date information not found in the provided documents. If a question is clearly about recent events or a broad fact not likely in your specific documents, use this tool.
+            - **GitHub API Tools:** You have access to a comprehensive set of tools to interact with the GitHub API. These tools were generated directly from GitHub's OpenAPI specification. You can use them to:
+                - Get information about GitHub users (e.g., "Tell me about the GitHub user octocat").
+                - List repositories (public and private, for a specific user or the authenticated user if GITHUB_PAT is provided) (e.g., "What are venkat5ai's public repos?", "List my private repos on GitHub").
+                - Get details for specific pull requests (e.g., "What is the status of PR 123 in venkat5ai/moviebot?").
+                - List pull requests in a repository (e.g., "List all open PRs in venkat5ai/moviebot").
+                **When querying GitHub, carefully extract the necessary parameters like `username`, `owner`, `repo`, `pull_number`, or `state` from the user's question before calling any GitHub tool.**
             - **Weather Information:** Use `get_current_weather` for real-time weather.
                 - **Clarification First:** If a location is vague (e.g., just "Ashburn") or seems incorrect (e.g., "Ashburn NC"), *always ask the user for clarification (e.g., "Which Ashburn are you referring to?")* or **suggest a more precise format** (e.g., "Please provide a zip code or a city and state/country, like 'Ashburn, VA' or 'Paris, FR'"). **Do not call the weather tool until you have a clear, precise location.**
             

@@ -55,3 +55,6 @@ WEB_SCRAPER_USER_AGENT = os.getenv("WEB_SCRAPER_USER_AGENT", "Mozilla/5.0 (Windo
 # Deep Scraping Configuration
 SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", 1.0)) # Delay between requests during deep scraping
 MAX_DOCUMENTS_TO_SCRAPE = int(os.getenv("MAX_DOCUMENTS_TO_SCRAPE", 5)) # Max number of web documents to scrape
+
+# GitHub Configuration
+GITHUB_PAT = os.getenv("GITHUB_PAT")
