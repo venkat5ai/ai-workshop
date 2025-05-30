@@ -37,7 +37,7 @@ from flask_cors import CORS
 # --- Core LangChain and Data Processing Imports ---
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import DirectoryLoader
+from langchain_community.document_loaders import DirectoryLoader # Corrected import path
 # Temporarily alias UnstructuredFileLoader from langchain_community
 # The deprecation warning indicates this should move to 'langchain-unstructured' package
 from langchain_community.document_loaders import UnstructuredFileLoader as LangChainUnstructuredFileLoader
@@ -47,9 +47,8 @@ from langchain_community.document_loaders import UnstructuredURLLoader # For mor
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.memory import ConversationBufferMemory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.memory import ConversationBufferMemory # Keep this for agent memory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder # CRITICAL FIX: Added MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
@@ -69,9 +68,9 @@ from sentence_transformers import CrossEncoder # For reranking
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors.base import BaseDocumentCompressor
 
-# --- NEW: Import ingestion utilities and openapi tools ---
-import ingestion_utils 
-import openapi
+# --- NEW: Import ingestion utilities and tool manager ---
+import ingestion_utils
+import tool_manager # CRITICAL FIX: Correct import name
 
 # --- Application Configuration ---
 import config
@@ -86,7 +85,8 @@ llm = None
 retriever = None
 agent_executors = {}
 db = None # Make db a global variable so it can be accessed for updates
-all_agent_tools = [] # NEW: Global list to hold all tools (RAG, Weather, Google, OpenAPI)
+all_agent_tools = [] # NEW: Global list to hold static tools (RAG, Weather, Google)
+tool_manager_instance = None # NEW: Global instance of ToolManager for OpenAPI tools
 
 # --- Flask App Instance ---
 app = Flask(__name__)
@@ -111,7 +111,7 @@ try:
         func=lambda query: run_Google_Search(query), # Use a lambda to call the function
         description="A powerful search tool for general knowledge, current events, and information not found in the documents. Input should be a concise search query string."
     )
-    logger.info("GoogleSearchAPIWrapper and Google_Search_tool initialized.")
+    logger.info("GoogleSearchAPIWrapper and Google Search_tool initialized.")
 except Exception as e:
     logger.error(f"Failed to initialize GoogleSearchAPIWrapper: {e}")
     logger.error("Please ensure GOOGLE_API_KEY and GOOGLE_CSE_ID are set in your environment for Google Search functionality.")
@@ -375,7 +375,7 @@ def initialize_rag_components(model_mode: str):
     Initializes the RAG pipeline components: document loader, text splitter,
     embedding model, vector store (ChromaDB), and language model.
     """
-    global llm, retriever, db, all_agent_tools
+    global llm, retriever, db, all_agent_tools, tool_manager_instance # Added tool_manager_instance to global
 
     # Ensure necessary directories exist.
     for directory in [config.DOCUMENT_STORAGE_DIRECTORY, config.AGENT_CONFIG_DIRECTORY, config.CHROMA_DB_DIRECTORY]:
@@ -518,28 +518,42 @@ def initialize_rag_components(model_mode: str):
     logger.info("Added 'document_qa_retriever' tool placeholder (will be bound with session memory).")
 
 
-    # Tool 4: GitHub API Tools (dynamically loaded from OpenAPI spec via openapi.py)
-    github_spec_path = os.path.join(config.AGENT_CONFIG_DIRECTORY, config.GITHUB_SPEC_FILENAME) # Use new config directory
-    logger.info(f"Attempting to load GitHub API tools from: {github_spec_path}")
-    
+    # NEW: Initialize the global ToolManager instance
+    logger.info("Initializing ToolManager for OpenAPI tools...")
+    tool_manager_instance = tool_manager.ToolManager( # CRITICAL FIX: Reference tool_manager module directly
+        chroma_db_directory=os.path.join(config.CHROMA_DB_DIRECTORY, "tools_db"), # Separate DB for tools
+        embedding_function=embeddings, # Reuse the same embeddings
+        tool_collection_name="openapi_tools_collection"
+    )
+    logger.info("ToolManager initialized.")
+
+    # Load GitHub API tools into the ToolManager
+    github_spec_path = os.path.join(config.AGENT_CONFIG_DIRECTORY, config.GITHUB_SPEC_FILENAME)
+    logger.info(f"Attempting to load GitHub API tools from: {github_spec_path} using ToolManager...")
+
     github_headers = {}
-    if config.GITHUB_TOKEN: # Use GITHUB_TOKEN from config.py
-        github_headers["Authorization"] = f"token {config.GITHUB_TOKEN}" # GitHub uses 'token' for PATs
-        github_headers["Accept"] = "application/vnd.github.v3+json" # Recommended for GitHub API
+    if config.GITHUB_TOKEN:
+        github_headers["Authorization"] = f"token {config.GITHUB_TOKEN}"
+        github_headers["Accept"] = "application/vnd.github.v3+json"
         logger.info("GitHub Token found. Will use for authentication with GitHub OpenAPI tools.")
     else:
         logger.warning("GITHUB_TOKEN environment variable not set. GitHub API requests via OpenAPI tools may be rate-limited or fail for private resources.")
 
     github_requests_wrapper = RequestsWrapper(headers=github_headers)
 
-    # Use the function from the new openapi module
-    github_openapi_tools = openapi.load_and_create_tools_from_openapi_spec(github_spec_path, github_requests_wrapper)
-    
+    # This call will create tools AND store their descriptions in tool_manager_instance.tool_db
+    # It also populates tool_manager_instance.all_available_tools
+    github_openapi_tools = tool_manager_instance.load_openapi_spec_and_create_tools(
+        github_spec_path, github_requests_wrapper
+    )
+
     if not github_openapi_tools:
         logger.error("No GitHub tools were loaded from OpenAPI spec. Skipping GitHub API integration.")
     else:
-        all_agent_tools.extend(github_openapi_tools)
-        logger.info(f"GitHub API tools initialized successfully from OpenAPI spec. Added {len(github_openapi_tools)} GitHub operations as tools. Total tools: {len(all_agent_tools)}")
+        # We no longer add all github_openapi_tools to all_agent_tools directly.
+        # Instead, agent will dynamically retrieve them via the ToolManager.
+        logger.info(f"Loaded {len(github_openapi_tools)} GitHub API operations via ToolManager.")
+        logger.info(f"Total static tools: {len(all_agent_tools)}")
 
 
 # --- Route for the Web UI (e.g., for local testing and debugging) ---
@@ -687,16 +701,37 @@ def api_bot():
         _run_document_qa_retriever_tool = partial(_run_document_qa_retriever_tool_for_session, session_memory=memory)
 
         # 3. Define the tools the agent can use for this session
+        # Now use the global all_agent_tools, but replace the document_qa_retriever placeholder
+        # with the one bound to this session's memory.
         session_tools = []
+        
+        # Add static tools first (Weather, Google Search, Document RAG)
         for tool in all_agent_tools:
             if tool.name == "document_qa_retriever":
                 session_tools.append(Tool(
                     name="document_qa_retriever",
-                    func=_run_document_qa_retriever_tool,
+                    func=_run_document_qa_retriever_tool, # This is the dynamically bound function
                     description=tool.description
                 ))
-            else:
-                session_tools.append(tool)
+            elif tool.name == "Google Search" and Google_Search_tool:
+                session_tools.append(Google_Search_tool)
+            elif tool.name == "get_current_weather":
+                session_tools.append(tool) # weather_tool is already the actual tool object
+        
+        # NEW: Retrieve relevant OpenAPI tools based on the user's query
+        if tool_manager_instance:
+            # This is where the magic happens: retrieve only relevant tools for THIS query
+            relevant_openapi_tools = tool_manager_instance.get_relevant_tools(question, k=5) # Get top 5 relevant tools
+            session_tools.extend(relevant_openapi_tools)
+            logger.info(f"Added {len(relevant_openapi_tools)} dynamically retrieved OpenAPI tools for session {session_id}.")
+        else:
+            logger.warning("ToolManager instance not available. Skipping dynamic OpenAPI tool retrieval.")
+
+        logger.info(f"Total tools passed to agent for session {session_id}: {len(session_tools)}")
+
+        # CRITICAL ADDITION: Log the names of all tools being passed to the LLM
+        for i, tool_item in enumerate(session_tools):
+            logger.error(f"DEBUGGING TOOL LIST: Tool {i+1} Name: '{tool_item.name}'")
 
         # 4. Create the Agent
         agent_prompt = ChatPromptTemplate.from_messages([
@@ -704,7 +739,7 @@ def api_bot():
             
             **Tool Usage Priority and Guidelines:**
             - **Document Retrieval:** Use `document_qa_retriever` to answer questions by looking through your uploaded documents AND the pre-scraped web content. This is your primary source for internal knowledge.
-            - **Google Search:** Use `Google Search` for general knowledge questions, current events, or anything that requires up-to-date information not found in the provided documents. If a question is clearly about recent events or a broad fact not likely in your specific documents, use this tool.
+            - **Google Search:** Use `Google_Search` for general knowledge questions, current events, or anything that requires up-to-date information not found in the provided documents. If a question is clearly about recent events or a broad fact not likely in your specific documents, use this tool.
             - **OpenAPI Tools (GitHub, Weather):** You have access to various specialized tools for specific external services like GitHub and weather. These tools are dynamically loaded from OpenAPI specifications.
                 - When asked about GitHub, use the appropriate GitHub tool. Carefully extract necessary parameters like `username`, `owner`, `repo`, etc.
                 - When asked about weather, use `get_current_weather`. If a location is vague, ask for clarification (e.g., zip code, city and state/country). Do NOT call the weather tool without a precise location.
@@ -784,6 +819,7 @@ def api_bot():
 def health_check():
     """Provides a simple health check endpoint for the Flask application."""
     logger.info("Health check requested.")
+    # CRITICAL FIX: Return JSON, not render_template, for a health check endpoint
     return jsonify({"status": "healthy", "message": "Document Assistant is running"}), 200
 
 # --- Main execution block (Eager Loading) ---
