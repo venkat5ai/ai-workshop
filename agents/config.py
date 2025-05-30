@@ -16,6 +16,8 @@ DOCUMENT_STORAGE_DIRECTORY = os.getenv("DOCUMENT_STORAGE_DIRECTORY", "/app/data"
 CHROMA_DB_DIRECTORY = os.getenv("CHROMA_DB_DIRECTORY", "/app/chroma_db")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents_collection")
 
+AGENT_CONFIG_DIRECTORY = os.getenv("CHROMA_DB_DIRECTORY", "/app/config")
+
 # --- API Tool Configuration ---
 # Store API base URLs and API keys here for easy management
 
@@ -57,4 +59,5 @@ SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", 1.0)) # Delay bet
 MAX_DOCUMENTS_TO_SCRAPE = int(os.getenv("MAX_DOCUMENTS_TO_SCRAPE", 5)) # Max number of web documents to scrape
 
 # GitHub Configuration
-GITHUB_PAT = os.getenv("GITHUB_PAT")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_SPEC_FILENAME = os.getenv("GITHUB_SPEC_FILENAME", "api.github.com.yml") # NEW: Config for GitHub spec filename
