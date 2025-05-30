@@ -48,6 +48,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -324,6 +325,48 @@ def check_gemini_models():
         logger.error(f"Error listing models: {e}")
         logger.error("Please double-check your GOOGLE_API_KEY, internet connection, and API enablement if using Gemini.")
     return available_model_names
+
+# --- RAG Tool Definition Helper Function (now defined at module level) ---
+# CRITICAL FIX: Move this function definition BEFORE initialize_rag_components
+def _run_document_qa_retriever_tool_for_session(query: str, session_memory: ConversationBufferMemory) -> str:
+    """
+    Runs the RAG chain with the given query and the current session's chat history.
+    This function is used as the 'func' for the document_qa_retriever tool.
+    It takes the session's memory as an explicit argument.
+    """
+    # Access the memory object passed for the current session.
+    input_dict = {"input": query, "chat_history": session_memory.load_memory_variables({})["chat_history"]}
+    
+    try:
+        # Assuming rag_chain is accessible globally or passed in
+        # For simplicity, we'll re-create the basic RAG chain here each time the tool is called
+        # This is less efficient but ensures the tool is self-contained.
+        # A more advanced approach would make rag_chain a global or cached object.
+        history_aware_retriever_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language."),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("user", "{input}"),
+            ("user", "Standalone question:"),
+        ])
+        retrieval_chain = create_history_aware_retriever(llm, retriever, history_aware_retriever_prompt)
+        
+        document_qa_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a diligent and accurate Document Assistant. Provide information clearly and directly.
+            Based on the chat history and the provided context documents, answer the user's question. If the question is outside the context, use your general knowledge.
+            If you refer to specific information from the documents, you may briefly mention 'based on the documents' or similar, but avoid phrases like 'I cannot answer from the provided context'.
+
+            Context: {context}"""),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("user", "{input}"),
+        ])
+        document_qa_chain = create_stuff_documents_chain(llm, document_qa_prompt)
+        rag_chain = create_retrieval_chain(retrieval_chain, document_qa_chain)
+
+        result = rag_chain.invoke(input_dict)
+        return result.get('answer', 'No answer found from documents.')
+    except Exception as e:
+        logger.error(f"Error in document_qa_retriever tool for query '{query}': {e}", exc_info=True)
+        return f"Error retrieving document answer: An issue occurred while processing the document context."
 
 
 # --- Function to initialize the RAG components ---

@@ -1,6 +1,9 @@
 import os
 import yaml
 import logging
+
+logger = logging.getLogger(__name__)
+
 import json
 from functools import partial
 
@@ -11,16 +14,13 @@ from langchain_community.utilities.requests import RequestsWrapper # For making 
 # New: For OpenAPI spec validation
 from openapi_spec_validator import validate_spec 
 
-# CRITICAL FIX: Define logger here, BEFORE any logger calls
-logger = logging.getLogger(__name__)
-
 # CRITICAL FIX: Make OpenAPIValidationError import robust
 OpenAPIValidationError = None # Initialize to None
 try:
     from openapi_spec_validator import OpenAPIValidationError # Try direct import first (more common now)
 except ImportError:
     try:
-        from openapi_spec_validator.validation import OpenAPIValidationError # Fallback to .validation (older versions)
+        from openapi_spec_validator import OpenAPIValidationError
     except ImportError:
         logger.warning("Could not import 'OpenAPIValidationError' from 'openapi_spec_validator' or 'openapi_spec_validator.validation'. "
                        "OpenAPI validation errors will be caught by a generic Exception. Please ensure 'openapi-spec-validator' is correctly installed for your version.")
