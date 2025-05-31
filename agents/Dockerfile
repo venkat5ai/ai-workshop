@@ -23,7 +23,6 @@ RUN apt-get update && \
         libwebp-dev \
         tcl tk \
         libsqlite3-dev \
-    # Removed Playwright browser dependencies as they are no longer needed
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install for minimal layer size
 
@@ -39,12 +38,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Removed Playwright browser installation as it's no longer needed
-# RUN python -m playwright install --with-deps chromium
-
 # Download NLTK data required by unstructured
 # Downloads to /root/nltk_data by default in this environment.
-RUN python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab'); nltk.download('averaged_perceptron_tagger'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('maxent_ne_chunker'); nltk.download('words')"
+RUN python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger'); nltk.download('maxent_ne_chunker'); nltk.download('words')"
 
 
 # Stage 2: Runtime
@@ -52,7 +48,6 @@ RUN python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab'); 
 FROM python:3.10-slim-buster
 
 # Install only the essential runtime system dependencies.
-# Development and build tools (e.g., build-essential, python3-dev, libsqlite3-dev) are excluded here.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         poppler-utils \
@@ -69,7 +64,6 @@ RUN apt-get update && \
         liblcms2-dev \
         libwebp-dev \
         tcl tk \
-    # Removed Playwright runtime dependencies as they are no longer needed
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean # Clean apt cache immediately after install
 
@@ -78,8 +72,6 @@ WORKDIR /app
 
 # Copy installed Python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-# Removed Playwright browser binaries copy as it's no longer needed
-# COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 # Copy NLTK data from the builder stage
 COPY --from=builder /root/nltk_data /usr/local/share/nltk_data/
 
