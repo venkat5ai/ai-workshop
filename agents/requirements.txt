@@ -18,7 +18,7 @@ openpyxl==3.1.2
 google-generativeai
 pysqlite3-binary
 pdfminer.six==20221105
-requests
-beautifulsoup4==4.12.3
-langchain-google-community # Google Search API Wrapper for LangChain
-google-api-python-client # Underlying Google API client library
+requests # Keep requests, as it's a general dependency and might be used by langchain_community internally
+# Removed: langchain-google-community (Google Search tool), google-api-python-client (Google Search tool)
+# Removed: beautifulsoup4 (Web scraping)
+# Removed: modelcontextprotocol (MCP)
