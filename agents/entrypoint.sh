@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# This script is the ENTRYPOINT for the Docker container.
+# This script is the ENTRYPOINT for the Docker container. 
 # It executes the main Python application with arguments passed from CMD or docker run.
 
 # Execute the main Python application with arguments passed to this script.
