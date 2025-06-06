@@ -34,3 +34,16 @@ RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", 3)) # Number of top documents t
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper() # INFO, DEBUG, WARNING, ERROR, CRITICAL
+
+# Google Gemini/Vertex AI Configuration
+# Your Google Cloud Project ID (from gcloud config set project)
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "507154614599") # <--- UPDATE THIS
+# Vertex AI region where your resources are deployed
+VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1") # <--- UPDATE THIS (confirm your region)
+
+# ... (embedding and LLM model names are already correct) ...
+
+# Vertex AI Matching Engine Configuration
+# IMPORTANT: Replace with your actual Matching Engine Index ID and Endpoint ID
+ME_INDEX_ID = os.getenv("ME_INDEX_ID", "8304745465010716672") # <--- UPDATE THIS
+ME_ENDPOINT_ID = os.getenv("ME_ENDPOINT_ID", "3831087738287816704") # <--- UPDATE THIS
